@@ -98,25 +98,58 @@ export async function getServiceRequestById(id: string) {
 
   if (!result) return null;
 
-  // Get payment status for installation service requests
+  // Add payment status for all service requests that require payment
   let paymentStatus = null;
-  if (result.type === 'INSTALLATION' && result.installationRequestId) {
+
+  if (result.requiresPayment) {
+    // First check if there's a payment record for this service request
+    const servicePayment = await fastify.db.query.payments.findFirst({
+      where: eq(payments.serviceRequestId, result.id)
+    });
+
+    if (servicePayment) {
+      paymentStatus = {
+        status: servicePayment.status,
+        amount: servicePayment.amount,
+        method: servicePayment.paymentMethod,
+        paidDate: servicePayment.paidDate,
+        razorpayOrderId: servicePayment.razorpayOrderId,
+        razorpaySubscriptionId: servicePayment.razorpaySubscriptionId
+      };
+    } else if (result.status === 'PAYMENT_PENDING') {
+      // If no payment record but status is PAYMENT_PENDING, show pending status
+      paymentStatus = {
+        status: 'PENDING',
+        amount: result.paymentAmount,
+        method: null,
+        paidDate: null,
+        razorpayOrderId: result.razorpayOrderId,
+        razorpaySubscriptionId: result.razorpaySubscriptionId
+      };
+    }
+  }
+
+  // For installation type service requests, also check installation request payment
+  if (result.type === 'installation' && result.installationRequestId) {
     const installationRequest = await fastify.db.query.installationRequests.findFirst({
       where: eq(installationRequests.id, result.installationRequestId),
-      with: { product: true }
+      with: {
+        product: true
+      }
     });
 
     if (installationRequest?.status === 'PAYMENT_PENDING') {
-      const payment = await fastify.db.query.payments.findFirst({
+      const installationPayment = await fastify.db.query.payments.findFirst({
         where: eq(payments.installationRequestId, result.installationRequestId)
       });
-      
+
       paymentStatus = {
-        status: payment?.status || 'PENDING',
+        status: installationPayment?.status || 'PENDING',
         amount: installationRequest.orderType === 'RENTAL' ? installationRequest.product.deposit : installationRequest.product.buyPrice,
-        method: payment?.paymentMethod,
-        paidDate: payment?.paidDate,
-        razorpayOrderId: installationRequest.razorpayOrderId
+        method: installationPayment?.paymentMethod,
+        paidDate: installationPayment?.paidDate,
+        razorpayOrderId: installationRequest.razorpayOrderId,
+        razorpaySubscriptionId: installationRequest.razorpaySubscriptionId
       };
     }
   }
@@ -375,7 +408,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
       const installationRequest = await fastify.db.query.installationRequests.findFirst({
         where: eq(installationRequests.id, sr.installationRequestId)
       });
-      
+
       if (installationRequest?.status !== InstallationRequestStatus.INSTALLATION_COMPLETED) {
         throw badRequest('Installation cannot be completed without payment verification. Use PAYMENT_PENDING status first.');
       }
