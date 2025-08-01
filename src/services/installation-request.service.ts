@@ -257,8 +257,6 @@ export async function updateInstallationRequestStatus(
         assignedTechnicianId?: string;
         scheduledDate?: string;
         rejectionReason?: string;
-        installationImages?: string[];
-        autoPayment?: boolean;
     },
     user: { userId: string; role: UserRole }
 ) {
@@ -273,10 +271,31 @@ export async function updateInstallationRequestStatus(
         throw notFound('Installation request');
     }
 
-    // Validate status transitions
-    const validTransitions = getValidStatusTransitions(request.status);
-    if (!validTransitions.includes(data.status)) {
-        throw badRequest(`Cannot transition from ${request.status} to ${data.status}`);
+    // Only allow specific transitions for installation requests
+    const allowedTransitions = {
+        [InstallationRequestStatus.SUBMITTED]: [
+            InstallationRequestStatus.REJECTED,
+            InstallationRequestStatus.FRANCHISE_CONTACTED
+        ],
+        [InstallationRequestStatus.FRANCHISE_CONTACTED]: [
+            InstallationRequestStatus.INSTALLATION_SCHEDULED,
+            InstallationRequestStatus.CANCELLED
+        ],
+        [InstallationRequestStatus.INSTALLATION_SCHEDULED]: [
+            InstallationRequestStatus.CANCELLED
+        ],
+        [InstallationRequestStatus.CANCELLED]: [
+            InstallationRequestStatus.FRANCHISE_CONTACTED
+        ],
+        [InstallationRequestStatus.REJECTED]: [],
+        // These statuses are managed by service requests
+        [InstallationRequestStatus.INSTALLATION_IN_PROGRESS]: [],
+        [InstallationRequestStatus.PAYMENT_PENDING]: [],
+        [InstallationRequestStatus.INSTALLATION_COMPLETED]: []
+    };
+
+    if (!allowedTransitions[request.status]?.includes(data.status)) {
+        throw badRequest(`Cannot transition from ${request.status} to ${data.status}. This status is managed by service requests.`);
     }
 
     // Authorization check
@@ -300,143 +319,20 @@ export async function updateInstallationRequestStatus(
         }
         updateData.assignedTechnicianId = data.assignedTechnicianId;
         updateData.scheduledDate = data.scheduledDate;
+
+        // Create service request for installation
+        await createInstallationServiceRequest(requestId, data.assignedTechnicianId, data.scheduledDate, user);
     }
 
     if (data.status === InstallationRequestStatus.REJECTED && data.rejectionReason) {
         updateData.rejectionReason = data.rejectionReason;
     }
 
-    // Handle installation completion to payment pending
-    if (data.status === InstallationRequestStatus.PAYMENT_PENDING && currentStatus === InstallationRequestStatus.INSTALLATION_IN_PROGRESS) {
-        // Ensure installation images are provided
-        if (!data.installationImages || data.installationImages.length === 0) {
-            throw badRequest('Installation images are required before moving to payment pending');
-        }
-
-        updateData.installationImages = JSON.stringify(data.installationImages);
-
-        // Auto-generate payment link and setup auto payment if enabled
-        if (data.autoPayment) {
-            try {
-                const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
-
-                if (request.orderType === 'RENTAL') {
-                    // For rentals, create autopay subscription for deposit + recurring payments
-                    const subscriptionData = {
-                        plan_id: `plan_rental_${request.productId}`, // You should create plans in Razorpay dashboard
-                        customer_notify: 1,
-                        quantity: 1,
-                        total_count: 12, // 12 months (adjust as needed)
-                        start_at: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // Start tomorrow
-                        addons: [{
-                            item: {
-                                name: 'Installation Deposit',
-                                amount: amount * 100,
-                                currency: 'INR'
-                            }
-                        }],
-                        notes: {
-                            type: 'rental_with_deposit',
-                            installationRequestId: requestId,
-                            customerId: request.customerId,
-                            productId: request.productId
-                        }
-                    };
-
-                    const razorpaySubscription = await fastify.razorpay.subscriptions.create(subscriptionData);
-                    updateData.razorpaySubscriptionId = razorpaySubscription.id;
-                    updateData.autoPaymentEnabled = true;
-                } else {
-                    // For purchase, create single payment order
-                    const razorpayOrder = await fastify.razorpay.orders.create({
-                        amount: amount * 100,
-                        currency: 'INR',
-                        notes: {
-                            type: 'purchase',
-                            installationRequestId: requestId,
-                            customerId: request.customerId,
-                        }
-                    });
-                    updateData.razorpayOrderId = razorpayOrder.id;
-                }
-            } catch (error) {
-                console.error('Failed to create payment setup:', error);
-            }
-        }
-    }
-
-    // Prevent direct completion without payment verification
-    if (data.status === InstallationRequestStatus.INSTALLATION_COMPLETED && currentStatus !== InstallationRequestStatus.PAYMENT_PENDING) {
-        throw badRequest('Installation cannot be completed directly. Must go through payment pending status first.');
-    }
 
     // Update request
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
         .where(eq(installationRequests.id, requestId)).returning();
-
-    // Handle service request status sync
-    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
-        where: and(
-            eq(serviceRequests.installationRequestId, requestId),
-            eq(serviceRequests.type, 'INSTALLATION')
-        )
-    });
-
-    if (relatedServiceRequest) {
-        let serviceRequestStatus: string | null = null;
-        let serviceRequestActionType: ActionType | null = null;
-
-        switch (data.status) {
-            case InstallationRequestStatus.FRANCHISE_CONTACTED:
-                serviceRequestStatus = 'ASSIGNED';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_ASSIGNED;
-                break;
-            case InstallationRequestStatus.INSTALLATION_SCHEDULED:
-                serviceRequestStatus = 'SCHEDULED';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_SCHEDULED;
-                break;
-            case InstallationRequestStatus.INSTALLATION_IN_PROGRESS:
-                serviceRequestStatus = 'IN_PROGRESS';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_IN_PROGRESS;
-                break;
-            case InstallationRequestStatus.PAYMENT_PENDING:
-                serviceRequestStatus = 'PAYMENT_PENDING';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_COMPLETED;
-                break;
-            case InstallationRequestStatus.INSTALLATION_COMPLETED:
-                serviceRequestStatus = 'COMPLETED';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_COMPLETED;
-                break;
-            case InstallationRequestStatus.CANCELLED:
-                serviceRequestStatus = 'CANCELLED';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_CANCELLED;
-                break;
-            case InstallationRequestStatus.REJECTED:
-                serviceRequestStatus = 'CANCELLED';
-                serviceRequestActionType = ActionType.SERVICE_REQUEST_CANCELLED;
-                break;
-        }
-
-        if (serviceRequestStatus && serviceRequestActionType) {
-            await db.update(serviceRequests).set({
-                status: serviceRequestStatus,
-                updatedAt: now,
-                ...(serviceRequestStatus === 'COMPLETED' && { completedDate: now })
-            }).where(eq(serviceRequests.id, relatedServiceRequest.id));
-
-            await logActionHistory({
-                serviceRequestId: relatedServiceRequest.id,
-                actionType: serviceRequestActionType,
-                fromStatus: relatedServiceRequest.status,
-                toStatus: serviceRequestStatus,
-                performedBy: user.userId,
-                performedByRole: user.role,
-                comment: `Service request synced with installation request ${data.status}`,
-                metadata: JSON.stringify({ installationRequestId: requestId })
-            });
-        }
-    }
 
     // Log action history
     await logActionHistory({
@@ -450,9 +346,7 @@ export async function updateInstallationRequestStatus(
         metadata: JSON.stringify({
             assignedTechnicianId: data.assignedTechnicianId,
             scheduledDate: data.scheduledDate,
-            rejectionReason: data.rejectionReason,
-            installationImages: data.installationImages,
-            autoPayment: data.autoPayment
+            rejectionReason: data.rejectionReason
         })
     });
 
@@ -462,6 +356,79 @@ export async function updateInstallationRequestStatus(
     };
 }
 
+// Helper function to create installation service request
+async function createInstallationServiceRequest(
+    installationRequestId: string,
+    assignedTechnicianId: string,
+    scheduledDate: string,
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    
+    // Check if service request already exists
+    const existingServiceRequest = await db.query.serviceRequests.findFirst({
+        where: and(
+            eq(serviceRequests.installationRequestId, installationRequestId),
+            eq(serviceRequests.type, 'INSTALLATION')
+        )
+    });
+
+    if (existingServiceRequest) {
+        // Update existing service request
+        await db.update(serviceRequests).set({
+            assignedToId: assignedTechnicianId,
+            scheduledDate: scheduledDate,
+            status: ServiceRequestStatus.SCHEDULED,
+            updatedAt: new Date().toISOString()
+        }).where(eq(serviceRequests.id, existingServiceRequest.id));
+    } else {
+        // Create new service request
+        const installationRequest = await db.query.installationRequests.findFirst({
+            where: eq(installationRequests.id, installationRequestId)
+        });
+
+        if (installationRequest) {
+            const serviceRequestId = uuidv4();
+            await db.insert(serviceRequests).values({
+                id: serviceRequestId,
+                subscriptionId: null,
+                customerId: installationRequest.customerId,
+                productId: installationRequest.productId,
+                installationRequestId: installationRequestId,
+                type: ServiceRequestType.INSTALLATION,
+                description: `Installation service for ${installationRequest.name}`,
+                images: null,
+                status: ServiceRequestStatus.SCHEDULED,
+                assignedToId: assignedTechnicianId,
+                franchiseId: installationRequest.franchiseId,
+                scheduledDate: scheduledDate,
+                completedDate: null,
+                beforeImages: null,
+                afterImages: null,
+                requiresPayment: false,
+                paymentAmount: null,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+            });
+
+            // Log action history
+            await logActionHistory({
+                serviceRequestId: serviceRequestId,
+                actionType: ActionType.SERVICE_REQUEST_CREATED,
+                toStatus: ServiceRequestStatus.SCHEDULED,
+                performedBy: user.userId,
+                performedByRole: user.role,
+                comment: 'Installation service request created and scheduled',
+                metadata: JSON.stringify({ 
+                    installationRequestId, 
+                    assignedTechnicianId, 
+                    scheduledDate 
+                })
+            });
+        }
+    }
+}
 export async function markInstallationInProgress(
     requestId: string,
     data: {

@@ -395,24 +395,19 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
   if (!hasPermission) throw forbidden('You do not have permission to update this service request');
 
+  // Special validation for installation service requests
+  if (sr.type === ServiceRequestType.INSTALLATION) {
+    await validateInstallationServiceRequestTransition(sr, status, images);
+  }
+
   const oldStatus = sr.status;
   const updateData: any = {
     status,
     updatedAt: new Date().toISOString(),
   };
 
-  // Handle completion - check payment status for installation requests
+  // Handle completion
   if (status === ServiceRequestStatus.COMPLETED) {
-    // For installation service requests, ensure payment is completed before marking as completed
-    if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
-      const installationRequest = await fastify.db.query.installationRequests.findFirst({
-        where: eq(installationRequests.id, sr.installationRequestId)
-      });
-
-      if (installationRequest?.status !== InstallationRequestStatus.INSTALLATION_COMPLETED) {
-        throw badRequest('Installation cannot be completed without payment verification. Use PAYMENT_PENDING status first.');
-      }
-    }
     updateData.completedDate = new Date().toISOString();
   }
 
@@ -428,53 +423,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
   // Handle installation request status sync for installation service requests
   if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
-    let installationStatus: InstallationRequestStatus | null = null;
-    let installationActionType: ActionType | null = null;
-
-    switch (status) {
-      case ServiceRequestStatus.IN_PROGRESS:
-        installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
-        installationActionType = ActionType.INSTALLATION_REQUEST_IN_PROGRESS;
-        break;
-      case ServiceRequestStatus.PAYMENT_PENDING:
-        installationStatus = InstallationRequestStatus.PAYMENT_PENDING;
-        installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
-        break;
-      case ServiceRequestStatus.COMPLETED:
-        installationStatus = InstallationRequestStatus.INSTALLATION_COMPLETED;
-        installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
-        break;
-      case ServiceRequestStatus.CANCELLED:
-        installationStatus = InstallationRequestStatus.CANCELLED;
-        installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
-        break;
-    }
-
-    if (installationStatus && installationActionType) {
-      // Get current installation request status
-      const currentInstallationRequest = await fastify.db.query.installationRequests.findFirst({
-        where: eq(installationRequests.id, sr.installationRequestId)
-      });
-
-      // Update installation request status
-      await fastify.db.update(installationRequests).set({
-        status: installationStatus,
-        updatedAt: new Date().toISOString(),
-        ...(status === ServiceRequestStatus.COMPLETED && { completedDate: new Date().toISOString() })
-      }).where(eq(installationRequests.id, sr.installationRequestId));
-
-      // Log action history for installation request
-      await logActionHistory({
-        installationRequestId: sr.installationRequestId,
-        actionType: installationActionType,
-        fromStatus: currentInstallationRequest?.status,
-        toStatus: installationStatus,
-        performedBy: user.userId,
-        performedByRole: user.role,
-        comment: `Installation request status updated via service request ${status}`,
-        metadata: { serviceRequestId: id, serviceRequestStatus: status }
-      });
-    }
+    await syncInstallationRequestStatus(sr.installationRequestId, status, user, id);
   }
 
   // Log action history for service request
@@ -496,6 +445,62 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
   return await getServiceRequestById(id);
 }
 
+// Validate installation service request status transitions
+async function validateInstallationServiceRequestTransition(
+  sr: any, 
+  newStatus: ServiceRequestStatus, 
+  images?: { beforeImages?: string[]; afterImages?: string[] }
+) {
+  // Validate transition to PAYMENT_PENDING
+  if (newStatus === ServiceRequestStatus.PAYMENT_PENDING) {
+    if (sr.status !== ServiceRequestStatus.IN_PROGRESS) {
+      throw badRequest('Can only move to PAYMENT_PENDING from IN_PROGRESS status');
+    }
+    
+    // Require after images (installation completion photos)
+    if (!images?.afterImages || images.afterImages.length === 0) {
+      throw badRequest('Installation completion images are required before moving to payment pending');
+    }
+  }
+
+  // Validate transition to COMPLETED
+  if (newStatus === ServiceRequestStatus.COMPLETED) {
+    if (sr.status !== ServiceRequestStatus.PAYMENT_PENDING) {
+      throw badRequest('Installation can only be completed after payment verification');
+    }
+  }
+}
+
+// Sync installation request status based on service request status
+async function syncInstallationRequestStatus(
+  installationRequestId: string,
+  serviceRequestStatus: ServiceRequestStatus,
+  user: any,
+  serviceRequestId: string
+) {
+  const fastify = getFastifyInstance();
+  
+  let installationStatus: InstallationRequestStatus | null = null;
+  let installationActionType: ActionType | null = null;
+
+  switch (serviceRequestStatus) {
+    case ServiceRequestStatus.IN_PROGRESS:
+      installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
+      installationActionType = ActionType.INSTALLATION_REQUEST_IN_PROGRESS;
+      break;
+    case ServiceRequestStatus.PAYMENT_PENDING:
+      installationStatus = InstallationRequestStatus.PAYMENT_PENDING;
+      installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+      break;
+    case ServiceRequestStatus.COMPLETED:
+      installationStatus = InstallationRequestStatus.INSTALLATION_COMPLETED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+      break;
+    case ServiceRequestStatus.CANCELLED:
+      installationStatus = InstallationRequestStatus.CANCELLED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
+      break;
+  }
 // Helper function to map status to action type
 function getActionTypeForStatus(status: ServiceRequestStatus): ActionType {
   switch (status) {
