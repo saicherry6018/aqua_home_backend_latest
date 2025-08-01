@@ -163,8 +163,7 @@ export const getFranchiseAgents = async (franchiseId: string) => {
             id: users.id,
             name: users.name,
             phone: users.phone,
-            email: users.email,
-            role: franchiseAgents.role,
+            role: users.role,
             isPrimary: franchiseAgents.isPrimary,
             isActive: franchiseAgents.isActive,
             assignedDate: franchiseAgents.assignedDate

@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
 import { serviceRequests, users, products, subscriptions, installationRequests, franchises } from '../models/schema';
-import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType } from '../types';
+import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
 import { getFastifyInstance } from '../shared/fastify-instance';
@@ -120,8 +120,8 @@ export async function createServiceRequest(data: any, user: any) {
   console.log('Creating service request with data:', data);
 
   // Get product
-  const product = await fastify.db.query.products.findFirst({ 
-    where: eq(products.id, data.productId) 
+  const product = await fastify.db.query.products.findFirst({
+    where: eq(products.id, data.productId)
   });
   if (!product) throw notFound('Product');
 
@@ -148,7 +148,7 @@ export async function createServiceRequest(data: any, user: any) {
       where: eq(users.id, user.userId)
     });
     if (!userFromDb?.city) throw badRequest('User city not found. Cannot determine franchise.');
-    
+
     // Find franchise by city (you might need to implement geo-location based matching)
     const franchise = await fastify.db.query.franchises.findFirst({
       where: eq(franchises.city, userFromDb.city)
@@ -229,8 +229,8 @@ export async function createInstallationServiceRequest(data: {
 
   // Validate assigned agent if provided
   if (data.assignedToId) {
-    const agent = await fastify.db.query.users.findFirst({ 
-      where: eq(users.id, data.assignedToId) 
+    const agent = await fastify.db.query.users.findFirst({
+      where: eq(users.id, data.assignedToId)
     });
     if (!agent || agent.role !== UserRole.SERVICE_AGENT) {
       throw badRequest('Invalid service agent');
@@ -261,6 +261,11 @@ export async function createInstallationServiceRequest(data: {
   };
 
   await fastify.db.insert(serviceRequests).values(serviceRequest);
+
+  await fastify.db.update(installationRequests).set({
+    status: InstallationRequestStatus.INSTALLATION_SCHEDULED,
+    assignedTechnicianId: data.assignedToId
+  }).where(eq(installationRequests.id, installationRequest.id))
 
   // Log action history
   await logActionHistory(createServiceRequestStatusAction(
@@ -298,7 +303,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
   // Permission: admin, franchise owner, or assigned agent
   let hasPermission = false;
-  
+
   if (user.role === UserRole.ADMIN) {
     hasPermission = true;
   } else if (user.role === UserRole.SERVICE_AGENT && sr.assignedToId === user.userId) {
@@ -307,7 +312,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     const franchise = await getFranchiseById(sr.franchiseId);
     hasPermission = franchise && franchise.ownerId === user.userId;
   }
-  
+
   if (!hasPermission) throw forbidden('You do not have permission to update this service request');
 
   const oldStatus = sr.status;
@@ -339,7 +344,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     status,
     user.userId,
     user.role,
-    { 
+    {
       hasBeforeImages: !!images?.beforeImages,
       hasAfterImages: !!images?.afterImages
     }
@@ -425,7 +430,7 @@ export async function scheduleServiceRequest(id: string, scheduledDate: string, 
 
   // Permission: admin, franchise owner, or assigned agent
   let hasPermission = false;
-  
+
   if (user.role === UserRole.ADMIN) {
     hasPermission = true;
   } else if (user.role === UserRole.SERVICE_AGENT && sr.assignedToId === user.userId) {
@@ -434,7 +439,7 @@ export async function scheduleServiceRequest(id: string, scheduledDate: string, 
     const franchise = await getFranchiseById(sr.franchiseId);
     hasPermission = franchise && franchise.ownerId === user.userId;
   }
-  
+
   if (!hasPermission) throw forbidden('You do not have permission to schedule this service request');
 
   // Validate scheduled date is in the future

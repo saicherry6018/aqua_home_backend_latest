@@ -13,6 +13,7 @@ import {
     updateInstallationRequestStatus,
     completeInstallation
 } from "../controllers/installation-request.controller";
+import { UserRole } from "../types";
 
 export default async function (fastify: FastifyInstance) {
     // Customer creates installation request
@@ -51,7 +52,7 @@ export default async function (fastify: FastifyInstance) {
         '/:id/status',
         {
             schema: updateInstallationRequestStatusSchema,
-            preHandler: [fastify.authenticate, fastify.authorizeRoles(['FRANCHISE_OWNER', 'ADMIN'])],
+            preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
         },
         (req, rep) => updateInstallationRequestStatus(req as any, rep)
 

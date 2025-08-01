@@ -158,12 +158,22 @@ export async function getInstallationRequests(
             product: true,
             franchise: true,
             customer: true,
-            assignedTechnician: true
+            assignedTechnician: {
+                columns: {
+                    id: true,
+                    name: true,
+                    // phoneNumber: true,
+                    // email: true,
+                    // role: true,
+                }
+            }
         },
         orderBy: [desc(installationRequests.createdAt)],
         limit,
         offset
     });
+
+    console.log('requests here ',requests);
 
     // Get total count
     const [{ total }] = await db.select({ total: count() })
@@ -179,6 +189,44 @@ export async function getInstallationRequests(
             totalPages: Math.ceil(total / limit)
         }
     };
+}
+
+export async function getInstallationRequestById(
+    requestId: string,
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    const request = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: { product: true, customer: true, franchise: true }
+    });
+
+    if (!request) {
+        throw notFound('Installation request');
+    }
+
+    if (request.customerId !== user.userId && user.role !== UserRole.ADMIN) {
+        throw forbidden('You can only view your own requests');
+    }
+
+    const returnValue = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: {
+            product: true,
+            franchise: true,
+            customer: true,
+            assignedTechnician: true,
+            actionHistory:true
+        },
+
+
+    });
+
+    return returnValue;
+
+
+
 }
 
 export async function updateInstallationRequestStatus(

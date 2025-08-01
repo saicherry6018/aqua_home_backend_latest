@@ -123,9 +123,8 @@ export const getFranchiseAgentsSchema = {
             id: z.string(),
             name: z.string(),
             phone: z.string(),
-            email: z.string().nullable(),
             role: z.string(),
-            isPrimary: z.boolean(),
+            isPrimary: z.boolean().default(true),
             isActive: z.boolean(),
             assignedDate: z.string()
         }))),
