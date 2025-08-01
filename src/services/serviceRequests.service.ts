@@ -369,6 +369,10 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
         installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
         installationActionType = ActionType.INSTALLATION_REQUEST_IN_PROGRESS;
         break;
+      case ServiceRequestStatus.PAYMENT_PENDING:
+        installationStatus = InstallationRequestStatus.PAYMENT_PENDING;
+        installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+        break;
       case ServiceRequestStatus.COMPLETED:
         installationStatus = InstallationRequestStatus.INSTALLATION_COMPLETED;
         installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
@@ -434,6 +438,8 @@ function getActionTypeForStatus(status: ServiceRequestStatus): ActionType {
       return ActionType.SERVICE_REQUEST_SCHEDULED;
     case ServiceRequestStatus.IN_PROGRESS:
       return ActionType.SERVICE_REQUEST_IN_PROGRESS;
+    case ServiceRequestStatus.PAYMENT_PENDING:
+      return ActionType.SERVICE_REQUEST_COMPLETED;
     case ServiceRequestStatus.COMPLETED:
       return ActionType.SERVICE_REQUEST_COMPLETED;
     case ServiceRequestStatus.CANCELLED:

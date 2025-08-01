@@ -397,6 +397,33 @@ export async function markInstallationComplete(
         })
         .where(eq(installationRequests.id, requestId));
 
+    // Also update related service request if exists
+    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
+        where: and(
+            eq(serviceRequests.installationRequestId, requestId),
+            eq(serviceRequests.type, 'INSTALLATION')
+        )
+    });
+
+    if (relatedServiceRequest) {
+        await db.update(serviceRequests).set({
+            status: 'PAYMENT_PENDING',
+            updatedAt: now
+        }).where(eq(serviceRequests.id, relatedServiceRequest.id));
+
+        // Log action history for service request
+        await logActionHistory({
+            serviceRequestId: relatedServiceRequest.id,
+            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+            fromStatus: relatedServiceRequest.status,
+            toStatus: 'PAYMENT_PENDING',
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: `Installation completed, payment pending`,
+            metadata: JSON.stringify({ installationRequestId: requestId })
+        });
+    }
+
     // Log action history
     await logActionHistory({
         installationRequestId: requestId,
@@ -635,6 +662,34 @@ export async function verifyPaymentAndComplete(
             updatedAt: now
         })
         .where(eq(installationRequests.id, requestId));
+
+    // Also update related service request if exists
+    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
+        where: and(
+            eq(serviceRequests.installationRequestId, requestId),
+            eq(serviceRequests.type, 'INSTALLATION')
+        )
+    });
+
+    if (relatedServiceRequest) {
+        await db.update(serviceRequests).set({
+            status: 'COMPLETED',
+            completedDate: now,
+            updatedAt: now
+        }).where(eq(serviceRequests.id, relatedServiceRequest.id));
+
+        // Log action history for service request
+        await logActionHistory({
+            serviceRequestId: relatedServiceRequest.id,
+            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+            fromStatus: 'PAYMENT_PENDING',
+            toStatus: 'COMPLETED',
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: `Payment verified, installation completed`,
+            metadata: JSON.stringify({ installationRequestId: requestId, connectId })
+        });
+    }
 
     // Log action history
     await logActionHistory({

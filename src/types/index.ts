@@ -32,12 +32,13 @@ export enum ServiceRequestType {
   }
 
   export enum ServiceRequestStatus {
-    CREATED = 'created',
-    ASSIGNED = 'assigned',
-    SCHEDULED = 'scheduled',
-    IN_PROGRESS = 'in_progress',
-    COMPLETED = 'completed',
-    CANCELLED = 'cancelled',
+    CREATED = 'CREATED',
+    ASSIGNED = 'ASSIGNED',
+    SCHEDULED = 'SCHEDULED',
+    IN_PROGRESS = 'IN_PROGRESS',
+    PAYMENT_PENDING = 'PAYMENT_PENDING',
+    COMPLETED = 'COMPLETED',
+    CANCELLED = 'CANCELLED',
   }
 
   // Add these new enums to your existing types.ts file
