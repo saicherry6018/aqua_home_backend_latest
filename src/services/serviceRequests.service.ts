@@ -219,6 +219,17 @@ export async function createInstallationServiceRequest(data: {
   });
   if (!installationRequest) throw notFound('Installation Request');
 
+  // Check if installation service request already exists
+  const existingServiceRequest = await fastify.db.query.serviceRequests.findFirst({
+    where: and(
+      eq(serviceRequests.installationRequestId, data.installationRequestId),
+      eq(serviceRequests.type, ServiceRequestType.INSTALLATION)
+    )
+  });
+  if (existingServiceRequest) {
+    throw badRequest('Installation service request already exists for this installation request');
+  }
+
   // Check permissions
   if (user.role === UserRole.FRANCHISE_OWNER) {
     const franchise = await getFranchiseById(installationRequest.franchiseId);

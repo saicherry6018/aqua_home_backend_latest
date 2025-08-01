@@ -7,14 +7,16 @@ import {
     franchises,
     subscriptions,
     payments,
-    actionHistory
+    actionHistory,
+    serviceRequests
 } from '../models/schema';
 import {
     InstallationRequestStatus,
     UserRole,
     ActionType,
     PaymentType,
-    PaymentStatus
+    PaymentStatus,
+    ServiceRequestType
 } from '../types';
 import { badRequest, forbidden, notFound } from '../utils/errors';
 // import * as razorpayService from './razorpay.service';
@@ -281,6 +283,59 @@ export async function updateInstallationRequestStatus(
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
         .where(eq(installationRequests.id, requestId)).returning();
+
+    // Handle service request status sync for installation service requests
+    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
+        where: and(
+            eq(serviceRequests.installationRequestId, requestId),
+            eq(serviceRequests.type, 'INSTALLATION')
+        )
+    });
+
+    if (relatedServiceRequest) {
+        let serviceRequestStatus: string | null = null;
+        let serviceRequestActionType: ActionType | null = null;
+
+        switch (data.status) {
+            case InstallationRequestStatus.INSTALLATION_IN_PROGRESS:
+                serviceRequestStatus = 'IN_PROGRESS';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_IN_PROGRESS;
+                break;
+            case InstallationRequestStatus.INSTALLATION_COMPLETED:
+                serviceRequestStatus = 'COMPLETED';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_COMPLETED;
+                break;
+            case InstallationRequestStatus.CANCELLED:
+                serviceRequestStatus = 'CANCELLED';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_CANCELLED;
+                break;
+            case InstallationRequestStatus.REJECTED:
+                serviceRequestStatus = 'CANCELLED';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_CANCELLED;
+                break;
+        }
+
+        if (serviceRequestStatus && serviceRequestActionType) {
+            // Update service request status
+            await db.update(serviceRequests).set({
+                status: serviceRequestStatus,
+                updatedAt: new Date().toISOString(),
+                ...(serviceRequestStatus === 'COMPLETED' && { completedDate: new Date().toISOString() })
+            }).where(eq(serviceRequests.id, relatedServiceRequest.id));
+
+            // Log action history for service request
+            await logActionHistory({
+                serviceRequestId: relatedServiceRequest.id,
+                actionType: serviceRequestActionType,
+                fromStatus: relatedServiceRequest.status,
+                toStatus: serviceRequestStatus,
+                performedBy: user.userId,
+                performedByRole: user.role,
+                comment: `Service request status updated via installation request ${data.status}`,
+                metadata: JSON.stringify({ installationRequestId: requestId, installationRequestStatus: data.status })
+            });
+        }
+    }
 
     // Log action history
     await logActionHistory({
