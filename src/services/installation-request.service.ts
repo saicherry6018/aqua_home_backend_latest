@@ -845,14 +845,6 @@ export async function refreshPaymentStatus(
             }
         }
 
-        // Check regular order payments for purchase orders
-        if (!successfulPayment && request.razorpayOrderId) {
-            const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
-            successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
-            if (successfulPayment) {
-                successfulPayment.method = 'RAZORPAY';
-            }
-        }
 
         if (successfulPayment) {
             // Payment found, complete the installation
