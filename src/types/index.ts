@@ -1,0 +1,104 @@
+export enum UserRole {
+    CUSTOMER = 'customer',
+    ADMIN = 'admin',
+    FRANCHISE_OWNER = 'franchise_owner',
+    SERVICE_AGENT = 'service_agent',
+}
+export enum RentalStatus {
+    ACTIVE = 'active',
+    PAUSED = 'paused',
+    TERMINATED = 'terminated',
+    EXPIRED = 'expired',
+}
+
+
+export enum InstallationRequestStatus {
+    SUBMITTED = 'SUBMITTED',
+    FRANCHISE_CONTACTED = 'FRANCHISE_CONTACTED',
+    INSTALLATION_SCHEDULED = 'INSTALLATION_SCHEDULED',
+    INSTALLATION_IN_PROGRESS = 'INSTALLATION_IN_PROGRESS',
+    INSTALLATION_COMPLETED = 'INSTALLATION_COMPLETED',
+    CANCELLED = 'CANCELLED',
+    REJECTED = 'REJECTED'
+}
+
+export enum ServiceRequestType {
+    INSTALLATION = 'installation',
+    REPAIR = 'repair',
+    MAINTENANCE = 'maintenance',
+    UNINSTALLATION = 'uninstallation',
+    OTHER = 'other',
+  }
+
+  export enum ServiceRequestStatus {
+    CREATED = 'created',
+    ASSIGNED = 'assigned',
+    SCHEDULED = 'scheduled',
+    IN_PROGRESS = 'in_progress',
+    COMPLETED = 'completed',
+    CANCELLED = 'cancelled',
+  }
+
+  // Add these new enums to your existing types.ts file
+
+export enum PaymentType {
+    SUBSCRIPTION = 'SUBSCRIPTION',           // Monthly rental payment
+    SERVICE_CHARGE = 'SERVICE_CHARGE',       // One-time service fee
+    DEPOSIT = 'DEPOSIT',                     // Security deposit
+    INSTALLATION_FEE = 'INSTALLATION_FEE'   // Installation charges
+}
+
+export enum PaymentStatus {
+    PENDING = 'PENDING',
+    COMPLETED = 'COMPLETED',
+    FAILED = 'FAILED',
+    CANCELLED = 'CANCELLED',
+    REFUNDED = 'REFUNDED'
+}
+
+export enum ActionType {
+    // Installation Request Actions
+    INSTALLATION_REQUEST_SUBMITTED = 'INSTALLATION_REQUEST_SUBMITTED',
+    INSTALLATION_REQUEST_CONTACTED = 'INSTALLATION_REQUEST_CONTACTED',
+    INSTALLATION_REQUEST_SCHEDULED = 'INSTALLATION_REQUEST_SCHEDULED',
+    INSTALLATION_REQUEST_IN_PROGRESS = 'INSTALLATION_REQUEST_IN_PROGRESS',
+    INSTALLATION_REQUEST_COMPLETED = 'INSTALLATION_REQUEST_COMPLETED',
+    INSTALLATION_REQUEST_CANCELLED = 'INSTALLATION_REQUEST_CANCELLED',
+    INSTALLATION_REQUEST_REJECTED = 'INSTALLATION_REQUEST_REJECTED',
+    
+    // Subscription Actions
+    SUBSCRIPTION_ACTIVATED = 'SUBSCRIPTION_ACTIVATED',
+    SUBSCRIPTION_PAUSED = 'SUBSCRIPTION_PAUSED',
+    SUBSCRIPTION_TERMINATED = 'SUBSCRIPTION_TERMINATED',
+    SUBSCRIPTION_EXPIRED = 'SUBSCRIPTION_EXPIRED',
+    
+    // Service Request Actions
+    SERVICE_REQUEST_CREATED = 'SERVICE_REQUEST_CREATED',
+    SERVICE_REQUEST_ASSIGNED = 'SERVICE_REQUEST_ASSIGNED',
+    SERVICE_REQUEST_ACCEPTED = 'SERVICE_REQUEST_ACCEPTED',
+    SERVICE_REQUEST_SCHEDULED = 'SERVICE_REQUEST_SCHEDULED',
+    SERVICE_REQUEST_IN_PROGRESS = 'SERVICE_REQUEST_IN_PROGRESS',
+    SERVICE_REQUEST_COMPLETED = 'SERVICE_REQUEST_COMPLETED',
+    SERVICE_REQUEST_CANCELLED = 'SERVICE_REQUEST_CANCELLED',
+    
+    // Payment Actions
+    PAYMENT_INITIATED = 'PAYMENT_INITIATED',
+    PAYMENT_COMPLETED = 'PAYMENT_COMPLETED',
+    PAYMENT_FAILED = 'PAYMENT_FAILED',
+    PAYMENT_REFUNDED = 'PAYMENT_REFUNDED',
+    
+    // System Actions
+    CONNECT_ID_GENERATED = 'CONNECT_ID_GENERATED',
+    AUTOPAY_SETUP = 'AUTOPAY_SETUP',
+    NOTIFICATION_SENT = 'NOTIFICATION_SENT'
+}
+
+export interface GeoLocation {
+    latitude: number;
+    longitude: number;
+  }
+  
+  export interface GeoPolygon {
+    type: string;
+    coordinates: number[][][];
+  }
