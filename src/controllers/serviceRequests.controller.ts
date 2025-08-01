@@ -1,7 +1,7 @@
 import { FastifyRequest, FastifyReply } from "fastify";
 import * as serviceRequestService from '../services/serviceRequests.service';
 import * as installationRequestService from '../services/installation-request.service';
-import { handleError, forbidden, notFound } from "../utils/errors";
+import { handleError, forbidden, notFound, badRequest } from "../utils/errors";
 import { ServiceRequestStatus, UserRole } from '../types';
 
 // Get all service requests

@@ -148,11 +148,11 @@ export default async function (fastify: FastifyInstance) {
   // Service agent specific routes for installation requests
   fastify.post('/:id/generate-payment-link', {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
-  }, generateInstallationPaymentLink);
+  }, (req,res)=>generateInstallationPaymentLink(req as any,res));
 
   fastify.post('/:id/refresh-payment-status', {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
-  }, refreshInstallationPaymentStatus);
+  },  (req,res)=>refreshInstallationPaymentStatus(req as any,res));
 
   // fastify.post('/:id/upload-payment-proof', {
   //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
