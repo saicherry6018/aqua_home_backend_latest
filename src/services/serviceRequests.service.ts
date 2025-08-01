@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
-import { serviceRequests, users, products, subscriptions, installationRequests, franchises } from '../models/schema';
+import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments } from '../models/schema';
 import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
@@ -368,8 +368,18 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     updatedAt: new Date().toISOString(),
   };
 
-  // Handle completion
+  // Handle completion - check payment status for installation requests
   if (status === ServiceRequestStatus.COMPLETED) {
+    // For installation service requests, ensure payment is completed before marking as completed
+    if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
+      const installationRequest = await fastify.db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, sr.installationRequestId)
+      });
+      
+      if (installationRequest?.status !== InstallationRequestStatus.INSTALLATION_COMPLETED) {
+        throw badRequest('Installation cannot be completed without payment verification. Use PAYMENT_PENDING status first.');
+      }
+    }
     updateData.completedDate = new Date().toISOString();
   }
 

@@ -10,7 +10,10 @@ import {
     getInstallationRequests,
     getInstallationRequestById,
     updateInstallationRequestStatus,
-    completeInstallation
+    markInstallationComplete,
+    refreshPaymentStatus,
+    generatePaymentLink,
+    verifyPaymentAndComplete
 } from "../controllers/installation-request.controller";
 import { UserRole } from "../types";
 

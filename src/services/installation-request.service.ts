@@ -304,6 +304,13 @@ export async function updateInstallationRequestStatus(
 
     // Handle installation completion to payment pending
     if (data.status === InstallationRequestStatus.PAYMENT_PENDING && currentStatus === InstallationRequestStatus.INSTALLATION_IN_PROGRESS) {
+        // Ensure installation images are provided
+        if (!data.installationImages || data.installationImages.length === 0) {
+            throw badRequest('Installation images are required before moving to payment pending');
+        }
+        
+        updateData.installationImages = JSON.stringify(data.installationImages);
+        
         // Auto-generate payment link and setup auto payment if enabled
         if (data.autoPayment) {
             try {
@@ -331,6 +338,11 @@ export async function updateInstallationRequestStatus(
                 console.error('Failed to create payment order:', error);
             }
         }
+    }
+
+    // Prevent direct completion without payment verification
+    if (data.status === InstallationRequestStatus.INSTALLATION_COMPLETED && currentStatus !== InstallationRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Installation cannot be completed directly. Must go through payment pending status first.');
     }
 
     // Update request

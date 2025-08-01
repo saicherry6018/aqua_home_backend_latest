@@ -152,6 +152,35 @@ export async function generatePaymentLink(
     }
 }
 
+export async function markInstallationComplete(
+    request: FastifyRequest<{
+        Params: { id: string };
+        Body: {
+            installationImages?: string[];
+            notes?: string;
+            autoPayment?: boolean;
+        };
+    }>,
+    reply: FastifyReply
+) {
+    try {
+        const result = await installationRequestService.updateInstallationRequestStatus(
+            request.params.id,
+            {
+                status: InstallationRequestStatus.PAYMENT_PENDING,
+                comment: request.body.notes,
+                installationImages: request.body.installationImages,
+                autoPayment: request.body.autoPayment
+            },
+            request.user
+        );
+
+        return reply.code(200).send(result);
+    } catch (error) {
+        handleError(error, request, reply);
+    }
+}
+
 export async function verifyPaymentAndComplete(
     request: FastifyRequest<{
         Params: { id: string };
