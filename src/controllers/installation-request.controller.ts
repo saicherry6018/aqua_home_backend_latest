@@ -87,6 +87,8 @@ interface UpdateStatusBody {
     assignedTechnicianId?: string;
     scheduledDate?: string;
     rejectionReason?: string;
+    installationImages?: string[];
+    autoPayment?: boolean;
 }
 
 export async function updateInstallationRequestStatus(
@@ -118,20 +120,13 @@ interface CompleteInstallationBody {
     razorpayCustomerId?: string;
 }
 
-export async function markInstallationComplete(
-    request: FastifyRequest<{
-        Params: { id: string };
-        Body: {
-            installationImages: string[];
-            notes?: string;
-        };
-    }>,
+export async function refreshPaymentStatus(
+    request: FastifyRequest<{ Params: { id: string } }>,
     reply: FastifyReply
 ) {
     try {
-        const result = await installationRequestService.markInstallationComplete(
+        const result = await installationRequestService.refreshPaymentStatus(
             request.params.id,
-            request.body,
             request.user
         );
 

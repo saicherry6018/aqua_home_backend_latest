@@ -98,6 +98,29 @@ export async function getServiceRequestById(id: string) {
 
   if (!result) return null;
 
+  // Get payment status for installation service requests
+  let paymentStatus = null;
+  if (result.type === 'INSTALLATION' && result.installationRequestId) {
+    const installationRequest = await fastify.db.query.installationRequests.findFirst({
+      where: eq(installationRequests.id, result.installationRequestId),
+      with: { product: true }
+    });
+
+    if (installationRequest?.status === 'PAYMENT_PENDING') {
+      const payment = await fastify.db.query.payments.findFirst({
+        where: eq(payments.installationRequestId, result.installationRequestId)
+      });
+      
+      paymentStatus = {
+        status: payment?.status || 'PENDING',
+        amount: installationRequest.orderType === 'RENTAL' ? installationRequest.product.deposit : installationRequest.product.buyPrice,
+        method: payment?.paymentMethod,
+        paidDate: payment?.paidDate,
+        razorpayOrderId: installationRequest.razorpayOrderId
+      };
+    }
+  }
+
   // Process result to ensure proper data structure and parse images
   return {
     ...result,
@@ -107,7 +130,8 @@ export async function getServiceRequestById(id: string) {
     product: result.product ? {
       ...result.product,
       images: parseJsonSafe<string[]>(result.product.images as any, [])
-    } : null
+    } : null,
+    paymentStatus
   };
 }
 

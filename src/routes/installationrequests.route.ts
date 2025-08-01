@@ -71,4 +71,13 @@ export default async function (fastify: FastifyInstance) {
     fastify.put('/:id/verify-payment', {
         preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
     }, verifyPaymentAndComplete);
+
+    // Refresh payment status
+    fastify.post(
+        '/:id/refresh-payment',
+        {
+            preHandler: [fastify.authenticate, fastify.authorize([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])]
+        },
+        installationRequestController.refreshPaymentStatus
+    );
 }
