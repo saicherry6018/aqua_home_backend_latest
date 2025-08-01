@@ -118,15 +118,59 @@ interface CompleteInstallationBody {
     razorpayCustomerId?: string;
 }
 
-export async function completeInstallation(
+export async function markInstallationComplete(
     request: FastifyRequest<{
         Params: { id: string };
-        Body: CompleteInstallationBody;
+        Body: {
+            installationImages: string[];
+            notes?: string;
+        };
     }>,
     reply: FastifyReply
 ) {
     try {
-        const result = await installationRequestService.completeInstallation(
+        const result = await installationRequestService.markInstallationComplete(
+            request.params.id,
+            request.body,
+            request.user
+        );
+
+        return reply.code(200).send(result);
+    } catch (error) {
+        handleError(error, request, reply);
+    }
+}
+
+export async function generatePaymentLink(
+    request: FastifyRequest<{ Params: { id: string } }>,
+    reply: FastifyReply
+) {
+    try {
+        const result = await installationRequestService.generatePaymentLink(
+            request.params.id,
+            request.user
+        );
+
+        return reply.code(200).send(result);
+    } catch (error) {
+        handleError(error, request, reply);
+    }
+}
+
+export async function verifyPaymentAndComplete(
+    request: FastifyRequest<{
+        Params: { id: string };
+        Body: {
+            paymentMethod?: 'RAZORPAY' | 'CASH' | 'UPI';
+            paymentImage?: string;
+            razorpayPaymentId?: string;
+            refresh?: boolean;
+        };
+    }>,
+    reply: FastifyReply
+) {
+    try {
+        const result = await installationRequestService.verifyPaymentAndComplete(
             request.params.id,
             request.body,
             request.user

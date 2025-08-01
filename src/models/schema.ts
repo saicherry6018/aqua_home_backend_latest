@@ -83,7 +83,8 @@ export const installationRequests = sqliteTable('installation_requests', {
     rejectionReason: text('rejection_reason'),
     status: text('status', { enum: Object.values(InstallationRequestStatus) }).notNull().default(InstallationRequestStatus.SUBMITTED),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`)
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    razorpayOrderId: text('razorpay_order_id')
 });
 
 // Subscriptions table - ONLY for RENTAL orders (not purchases)

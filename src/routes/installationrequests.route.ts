@@ -1,4 +1,3 @@
-
 import { FastifyInstance } from "fastify";
 import {
     createInstallationRequestSchema,
@@ -58,14 +57,18 @@ export default async function (fastify: FastifyInstance) {
 
     );
 
-    // Complete installation (Service Agent only)
-    fastify.post(
-        '/:id/complete',
-        {
-            schema: completeInstallationSchema,
-            preHandler: [fastify.authenticate, fastify.authorizeRoles(['SERVICE_AGENT'])],
-        },
-        (req, rep) => completeInstallation(req as any, rep)
+    // Mark installation as complete (moves to payment pending)
+    fastify.put('/:id/mark-complete', {
+        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
+    }, markInstallationComplete);
 
-    );
+    // Generate payment link for installation
+    fastify.post('/:id/generate-payment', {
+        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
+    }, generatePaymentLink);
+
+    // Verify payment and complete installation
+    fastify.put('/:id/verify-payment', {
+        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
+    }, verifyPaymentAndComplete);
 }

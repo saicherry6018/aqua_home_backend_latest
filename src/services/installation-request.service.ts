@@ -364,15 +364,11 @@ export async function updateInstallationRequestStatus(
     };
 }
 
-export async function completeInstallation(
+export async function markInstallationComplete(
     requestId: string,
     data: {
-        depositPaymentMethod?: 'CASH' | 'UPI' | 'RAZORPAY_MANUAL';
-        depositReceiptImage?: string;
         installationImages: string[];
         notes?: string;
-        setupAutoPay?: boolean;
-        razorpayCustomerId?: string;
     },
     user: { userId: string; role: UserRole }
 ) {
@@ -388,14 +384,210 @@ export async function completeInstallation(
     }
 
     if (request.status !== InstallationRequestStatus.INSTALLATION_IN_PROGRESS) {
-        throw badRequest('Installation must be in progress to complete');
+        throw badRequest('Installation must be in progress to mark complete');
+    }
+
+    const now = new Date().toISOString();
+
+    // Update installation request to payment pending
+    await db.update(installationRequests)
+        .set({
+            status: InstallationRequestStatus.PAYMENT_PENDING,
+            updatedAt: now
+        })
+        .where(eq(installationRequests.id, requestId));
+
+    // Log action history
+    await logActionHistory({
+        installationRequestId: requestId,
+        actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
+        fromStatus: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
+        toStatus: InstallationRequestStatus.PAYMENT_PENDING,
+        performedBy: user.userId,
+        performedByRole: user.role,
+        comment: data.notes,
+        metadata: JSON.stringify({
+            installationImages: data.installationImages
+        })
+    });
+
+    return {
+        message: 'Installation marked complete, payment pending',
+        installationRequest: {
+            id: requestId,
+            status: InstallationRequestStatus.PAYMENT_PENDING,
+            updatedAt: now
+        }
+    };
+}
+
+export async function generatePaymentLink(
+    requestId: string,
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    
+    const request = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: { product: true, customer: true, franchise: true }
+    });
+
+    if (!request) {
+        throw notFound('Installation request');
+    }
+
+    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Installation must be in payment pending state to generate payment link');
+    }
+
+    // Check permissions
+    if (user.role === UserRole.FRANCHISE_OWNER) {
+        const franchise = await db.query.franchises.findFirst({
+            where: eq(franchises.ownerId, user.userId)
+        });
+        if (!franchise || franchise.id !== request.franchiseId) {
+            throw forbidden('You can only generate payment links for your franchise requests');
+        }
+    } else if (![UserRole.ADMIN, UserRole.SERVICE_AGENT].includes(user.role)) {
+        throw forbidden('You do not have permission to generate payment links');
+    }
+
+    const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
+
+    try {
+        // Create Razorpay order
+        const razorpayOrder = await fastify.razorpay.orders.create({
+            amount: amount * 100, // Amount in paise
+            currency: 'INR',
+            notes: {
+                type: request.orderType === 'RENTAL' ? 'deposit' : 'purchase',
+                installationRequestId: requestId,
+                customerId: request.customerId,
+            }
+        });
+
+        // Update installation request with payment order ID
+        await db.update(installationRequests)
+            .set({
+                razorpayOrderId: razorpayOrder.id,
+                updatedAt: new Date().toISOString()
+            })
+            .where(eq(installationRequests.id, requestId));
+
+        // Log action history
+        await logActionHistory({
+            installationRequestId: requestId,
+            actionType: ActionType.PAYMENT_LINK_GENERATED,
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: 'Payment link generated',
+            metadata: JSON.stringify({
+                razorpayOrderId: razorpayOrder.id,
+                amount: amount
+            })
+        });
+
+        return {
+            message: 'Payment link generated successfully',
+            paymentLink: {
+                orderId: razorpayOrder.id,
+                amount: amount,
+                currency: 'INR',
+                keyId: process.env.RAZORPAY_KEY_ID,
+                qrCodeData: `upi://pay?pa=merchant@upi&pn=Merchant&am=${amount}&cu=INR&tn=${encodeURIComponent(`Payment for ${request.product.name}`)}`
+            }
+        };
+    } catch (error) {
+        console.error('Failed to create Razorpay order:', error);
+        throw badRequest('Failed to generate payment link');
+    }
+}
+
+export async function verifyPaymentAndComplete(
+    requestId: string,
+    data: {
+        paymentMethod?: 'RAZORPAY' | 'CASH' | 'UPI';
+        paymentImage?: string;
+        razorpayPaymentId?: string;
+        refresh?: boolean;
+    },
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    
+    const request = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: { product: true, customer: true, franchise: true }
+    });
+
+    if (!request) {
+        throw notFound('Installation request');
+    }
+
+    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Installation must be in payment pending state');
+    }
+
+    let paymentVerified = false;
+    let paymentDetails: any = null;
+
+    // If refresh is requested and razorpayOrderId exists, check payment status
+    if (data.refresh && request.razorpayOrderId) {
+        try {
+            const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
+            const successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
+            
+            if (successfulPayment) {
+                paymentVerified = true;
+                paymentDetails = {
+                    razorpayPaymentId: successfulPayment.id,
+                    method: 'RAZORPAY',
+                    amount: successfulPayment.amount / 100
+                };
+            }
+        } catch (error) {
+            console.error('Error checking payment status:', error);
+        }
+    }
+
+    // If Razorpay payment ID provided, verify it
+    if (data.razorpayPaymentId && !paymentVerified) {
+        try {
+            const payment = await fastify.razorpay.payments.fetch(data.razorpayPaymentId);
+            if (payment.status === 'captured' && payment.order_id === request.razorpayOrderId) {
+                paymentVerified = true;
+                paymentDetails = {
+                    razorpayPaymentId: payment.id,
+                    method: 'RAZORPAY',
+                    amount: payment.amount / 100
+                };
+            }
+        } catch (error) {
+            console.error('Error verifying payment:', error);
+        }
+    }
+
+    // For manual payment methods (CASH/UPI), require payment image
+    if (['CASH', 'UPI'].includes(data.paymentMethod || '') && data.paymentImage) {
+        paymentVerified = true;
+        paymentDetails = {
+            method: data.paymentMethod,
+            paymentImage: data.paymentImage,
+            amount: request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice
+        };
+    }
+
+    if (!paymentVerified) {
+        throw badRequest('Payment not verified. Please provide valid payment proof or refresh payment status.');
     }
 
     const now = new Date().toISOString();
     let connectId: string | null = null;
     let subscription = null;
 
-    // For RENTAL orders, create subscription and setup AutoPay
+    // For RENTAL orders, create subscription
     if (request.orderType === 'RENTAL') {
         connectId = generateConnectId();
         const subscriptionId = uuidv4();
@@ -420,41 +612,21 @@ export async function completeInstallation(
             updatedAt: now
         });
 
-        // Setup AutoPay if requested
-        let razorpaySubscriptionId = null;
-        if (data.setupAutoPay) {
-            try {
-                // razorpaySubscriptionId = await razorpayService.createSubscription({
-                //     customerId: data.razorpayCustomerId || await razorpayService.createCustomer(request.customer),
-                //     planId: await razorpayService.getOrCreatePlan(request.product.rentPrice),
-                //     totalCount: 60, // 5 years
-                //     startAt: Math.floor(new Date(getNextMonthDate(now)).getTime() / 1000)
-                // });
-
-                // // Update subscription with Razorpay ID
-                // await db.update(subscriptions)
-                //     .set({ razorpaySubscriptionId })
-                //     .where(eq(subscriptions.id, subscriptionId));
-            } catch (error) {
-                console.error('AutoPay setup failed:', error);
-                // Continue with installation completion even if AutoPay fails
-            }
-        }
-
-        subscription = { id: subscriptionId, connectId, razorpaySubscriptionId };
-
-        // Record deposit payment
-        if (data.depositPaymentMethod) {
-            await recordDepositPayment(subscriptionId, request.product.deposit, data);
-        }
-    } else {
-        // For PURCHASE orders, just record deposit/payment if provided
-        if (data.depositPaymentMethod) {
-            await recordDepositPayment(null, request.product.buyPrice, data, requestId);
-        }
+        subscription = { id: subscriptionId, connectId };
     }
 
-    // Update installation request
+    // Record payment
+    await recordDepositPayment(
+        subscription?.id || null,
+        paymentDetails.amount,
+        {
+            depositPaymentMethod: paymentDetails.method,
+            depositReceiptImage: paymentDetails.paymentImage
+        },
+        request.orderType === 'PURCHASE' ? requestId : undefined
+    );
+
+    // Update installation request to completed
     await db.update(installationRequests)
         .set({
             status: InstallationRequestStatus.INSTALLATION_COMPLETED,
@@ -468,24 +640,20 @@ export async function completeInstallation(
     await logActionHistory({
         installationRequestId: requestId,
         actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
-        fromStatus: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
+        fromStatus: InstallationRequestStatus.PAYMENT_PENDING,
         toStatus: InstallationRequestStatus.INSTALLATION_COMPLETED,
         performedBy: user.userId,
         performedByRole: user.role,
-        comment: data.notes,
+        comment: 'Payment verified and installation completed',
         metadata: JSON.stringify({
-            installationImages: data.installationImages,
             connectId,
-            depositPaymentMethod: data.depositPaymentMethod
+            paymentMethod: paymentDetails.method,
+            razorpayPaymentId: paymentDetails.razorpayPaymentId
         })
     });
 
-    //TO-DO
-    // Send completion notification with connectId (for rentals)
-    // await notificationService.notifyInstallationComplete(requestId, connectId);
-
     return {
-        message: 'Installation completed successfully',
+        message: 'Payment verified and installation completed successfully',
         installationRequest: {
             id: requestId,
             status: InstallationRequestStatus.INSTALLATION_COMPLETED,
@@ -524,6 +692,7 @@ function getActionTypeFromStatus(status: InstallationRequestStatus): ActionType 
         [InstallationRequestStatus.FRANCHISE_CONTACTED]: ActionType.INSTALLATION_REQUEST_CONTACTED,
         [InstallationRequestStatus.INSTALLATION_SCHEDULED]: ActionType.INSTALLATION_REQUEST_SCHEDULED,
         [InstallationRequestStatus.INSTALLATION_IN_PROGRESS]: ActionType.INSTALLATION_REQUEST_IN_PROGRESS,
+        [InstallationRequestStatus.PAYMENT_PENDING]: ActionType.INSTALLATION_REQUEST_COMPLETED,
         [InstallationRequestStatus.INSTALLATION_COMPLETED]: ActionType.INSTALLATION_REQUEST_COMPLETED,
         [InstallationRequestStatus.CANCELLED]: ActionType.INSTALLATION_REQUEST_CANCELLED,
         [InstallationRequestStatus.REJECTED]: ActionType.INSTALLATION_REQUEST_REJECTED,
