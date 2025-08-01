@@ -101,33 +101,33 @@ export async function getServiceRequestById(id: string) {
   // Add payment status for all service requests that require payment
   let paymentStatus = null;
 
-  if (result.requiresPayment) {
-    // First check if there's a payment record for this service request
-    const servicePayment = await fastify.db.query.payments.findFirst({
-      where: eq(payments.serviceRequestId, result.id)
-    });
+  // if (result.requiresPayment) {
+  //   // First check if there's a payment record for this service request
+  //   const servicePayment = await fastify.db.query.payments.findFirst({
+  //     where: eq(payments.serviceRequestId, result.id)
+  //   });
 
-    if (servicePayment) {
-      paymentStatus = {
-        status: servicePayment.status,
-        amount: servicePayment.amount,
-        method: servicePayment.paymentMethod,
-        paidDate: servicePayment.paidDate,
-        razorpayOrderId: servicePayment.razorpayOrderId,
-        razorpaySubscriptionId: servicePayment.razorpaySubscriptionId
-      };
-    } else if (result.status === 'PAYMENT_PENDING') {
-      // If no payment record but status is PAYMENT_PENDING, show pending status
-      paymentStatus = {
-        status: 'PENDING',
-        amount: result.paymentAmount,
-        method: null,
-        paidDate: null,
-        razorpayOrderId: result.razorpayOrderId,
-        razorpaySubscriptionId: result.razorpaySubscriptionId
-      };
-    }
-  }
+  //   if (servicePayment) {
+  //     paymentStatus = {
+  //       status: servicePayment.status,
+  //       amount: servicePayment.amount,
+  //       method: servicePayment.paymentMethod,
+  //       paidDate: servicePayment.paidDate,
+  //       razorpayOrderId: servicePayment.razorpayOrderId,
+  //       razorpaySubscriptionId: servicePayment.razorpaySubscriptionId
+  //     };
+  //   } else if (result.status === 'PAYMENT_PENDING') {
+  //     // If no payment record but status is PAYMENT_PENDING, show pending status
+  //     paymentStatus = {
+  //       status: 'PENDING',
+  //       amount: result.paymentAmount,
+  //       method: null,
+  //       paidDate: null,
+  //       razorpayOrderId: result.razorpayOrderId,
+  //       razorpaySubscriptionId: result.razorpaySubscriptionId
+  //     };
+  //   }
+  // }
 
   // For installation type service requests, also check installation request payment
   if (result.type === 'installation' && result.installationRequestId) {
@@ -146,9 +146,9 @@ export async function getServiceRequestById(id: string) {
       paymentStatus = {
         status: installationPayment?.status || 'PENDING',
         amount: installationRequest.orderType === 'RENTAL' ? installationRequest.product.deposit : installationRequest.product.buyPrice,
-        method: installationPayment?.paymentMethod,
+        method: installationPayment?.paymentMethod || 'Auto_Pay',
         paidDate: installationPayment?.paidDate,
-        razorpayOrderId: installationRequest.razorpayOrderId,
+        razorpayPaymentLink: installationRequest.razorpayPaymentLink,
         razorpaySubscriptionId: installationRequest.razorpaySubscriptionId
       };
     }
@@ -322,7 +322,7 @@ export async function createInstallationServiceRequest(data: {
     completedDate: null,
     beforeImages: null,
     afterImages: null,
-    requiresPayment: false,
+    requiresPayment: true,
     paymentAmount: null,
     createdAt: now,
     updatedAt: now,
@@ -426,8 +426,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     await syncInstallationRequestStatus(sr.installationRequestId, status, user, id);
   }
 
-  // Log action history for service request
-  const actionType = getActionTypeForStatus(status);
+
   await logActionHistory(createServiceRequestStatusAction(
     id,
     oldStatus,
@@ -447,8 +446,8 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
 // Validate installation service request status transitions
 async function validateInstallationServiceRequestTransition(
-  sr: any, 
-  newStatus: ServiceRequestStatus, 
+  sr: any,
+  newStatus: ServiceRequestStatus,
   images?: { beforeImages?: string[]; afterImages?: string[] }
 ) {
   // Validate transition to PAYMENT_PENDING
@@ -456,7 +455,7 @@ async function validateInstallationServiceRequestTransition(
     if (sr.status !== ServiceRequestStatus.IN_PROGRESS) {
       throw badRequest('Can only move to PAYMENT_PENDING from IN_PROGRESS status');
     }
-    
+
     // Require after images (installation completion photos)
     if (!images?.afterImages || images.afterImages.length === 0) {
       throw badRequest('Installation completion images are required before moving to payment pending');
@@ -472,6 +471,16 @@ async function validateInstallationServiceRequestTransition(
 }
 
 // Sync installation request status based on service request status
+
+// Helper function to map status to action type
+
+
+// Assign service agent
+
+// Schedule service request
+
+
+
 async function syncInstallationRequestStatus(
   installationRequestId: string,
   serviceRequestStatus: ServiceRequestStatus,
@@ -479,7 +488,7 @@ async function syncInstallationRequestStatus(
   serviceRequestId: string
 ) {
   const fastify = getFastifyInstance();
-  
+
   let installationStatus: InstallationRequestStatus | null = null;
   let installationActionType: ActionType | null = null;
 
@@ -501,27 +510,8 @@ async function syncInstallationRequestStatus(
       installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
       break;
   }
-// Helper function to map status to action type
-function getActionTypeForStatus(status: ServiceRequestStatus): ActionType {
-  switch (status) {
-    case ServiceRequestStatus.ASSIGNED:
-      return ActionType.SERVICE_REQUEST_ASSIGNED;
-    case ServiceRequestStatus.SCHEDULED:
-      return ActionType.SERVICE_REQUEST_SCHEDULED;
-    case ServiceRequestStatus.IN_PROGRESS:
-      return ActionType.SERVICE_REQUEST_IN_PROGRESS;
-    case ServiceRequestStatus.PAYMENT_PENDING:
-      return ActionType.SERVICE_REQUEST_COMPLETED;
-    case ServiceRequestStatus.COMPLETED:
-      return ActionType.SERVICE_REQUEST_COMPLETED;
-    case ServiceRequestStatus.CANCELLED:
-      return ActionType.SERVICE_REQUEST_CANCELLED;
-    default:
-      return ActionType.SERVICE_REQUEST_CREATED;
-  }
 }
 
-// Assign service agent
 export async function assignServiceAgent(id: string, assignedToId: string, user: any) {
   const fastify = getFastifyInstance();
   const sr = await getServiceRequestById(id);
@@ -570,7 +560,25 @@ export async function assignServiceAgent(id: string, assignedToId: string, user:
   return await getServiceRequestById(id);
 }
 
-// Schedule service request
+
+function getActionTypeForStatus(status: ServiceRequestStatus): ActionType {
+  switch (status) {
+    case ServiceRequestStatus.ASSIGNED:
+      return ActionType.SERVICE_REQUEST_ASSIGNED;
+    case ServiceRequestStatus.SCHEDULED:
+      return ActionType.SERVICE_REQUEST_SCHEDULED;
+    case ServiceRequestStatus.IN_PROGRESS:
+      return ActionType.SERVICE_REQUEST_IN_PROGRESS;
+    case ServiceRequestStatus.PAYMENT_PENDING:
+      return ActionType.SERVICE_REQUEST_COMPLETED;
+    case ServiceRequestStatus.COMPLETED:
+      return ActionType.SERVICE_REQUEST_COMPLETED;
+    case ServiceRequestStatus.CANCELLED:
+      return ActionType.SERVICE_REQUEST_CANCELLED;
+    default:
+      return ActionType.SERVICE_REQUEST_CREATED;
+  }
+}
 export async function scheduleServiceRequest(id: string, scheduledDate: string, user: any) {
   const fastify = getFastifyInstance();
   const sr = await getServiceRequestById(id);

@@ -18,11 +18,8 @@ import {
 } from '../schemas/servicerequests.schema';
 import { UserRole } from '../types';
 import {
-  markAsStarted,
-  markAsCompleted,
   generateInstallationPaymentLink,
   refreshInstallationPaymentStatus,
-  uploadPaymentProof
 } from '../controllers/serviceRequests.controller';
 
 export default async function (fastify: FastifyInstance) {
@@ -157,9 +154,9 @@ export default async function (fastify: FastifyInstance) {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   }, refreshInstallationPaymentStatus);
 
-  fastify.post('/:id/upload-payment-proof', {
-    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
-  }, uploadPaymentProof);
+  // fastify.post('/:id/upload-payment-proof', {
+  //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  // }, uploadPaymentProof);
 
   fastify.log.info('Service Request routes registered');
 }

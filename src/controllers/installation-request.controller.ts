@@ -14,6 +14,15 @@ interface CreateInstallationRequestBody {
     installationLongitude: string;
     installationAddress: string;
 }
+interface UpdateStatusBody {
+    status: InstallationRequestStatus;
+    comment?: string;
+    assignedTechnicianId?: string;
+    scheduledDate?: string;
+    rejectionReason?: string;
+    installationImages?: string[];
+    autoPayment?: boolean;
+}
 
 export async function createInstallationRequest(
     request: FastifyRequest<{ Body: CreateInstallationRequestBody }>,
@@ -50,17 +59,9 @@ export async function getInstallationRequests(
     reply: FastifyReply
 ) {
     try {
-    }
-}
-
-export async function generatePaymentLink(
-    request: FastifyRequest<{ Params: { id: string } }>,
-    reply: FastifyReply
-) {
-    try {
-        const result = await installationRequestService.generatePaymentLink(
-            request.params.id,
-            request.user
+        const result = await installationRequestService.getInstallationRequests(
+            request.user,
+            request.query
         );
 
         return reply.code(200).send(result);
@@ -69,49 +70,36 @@ export async function generatePaymentLink(
     }
 }
 
-export async function markInstallationComplete(
+
+export async function getInstallationRequestById(
+    request: FastifyRequest<{ Params: { id: string } }>,
+    reply: FastifyReply
+) {
+    try {
+        const result = await installationRequestService.getInstallationRequestById(
+            request.params.id,
+            request.user
+        );
+
+        if (!result) {
+            throw notFound('Installation request');
+        }
+
+        return reply.code(200).send({ installationRequest: result });
+    } catch (error) {
+        handleError(error, request, reply);
+    }
+}
+
+export async function updateInstallationRequestStatus(
     request: FastifyRequest<{
         Params: { id: string };
-        Body: {
-            installationImages?: string[];
-            notes?: string;
-            autoPayment?: boolean;
-        };
+        Body: UpdateStatusBody;
     }>,
     reply: FastifyReply
 ) {
     try {
         const result = await installationRequestService.updateInstallationRequestStatus(
-            request.params.id,
-            {
-                status: InstallationRequestStatus.PAYMENT_PENDING,
-                comment: request.body.notes,
-                installationImages: request.body.installationImages,
-                autoPayment: request.body.autoPayment
-            },
-            request.user
-        );
-
-        return reply.code(200).send(result);
-    } catch (error) {
-        handleError(error, request, reply);
-    }
-}
-
-export async function verifyPaymentAndComplete(
-    request: FastifyRequest<{
-        Params: { id: string };
-        Body: {
-            paymentMethod?: 'RAZORPAY' | 'CASH' | 'UPI';
-            paymentImage?: string;
-            razorpayPaymentId?: string;
-            refresh?: boolean;
-        };
-    }>,
-    reply: FastifyReply
-) {
-    try {
-        const result = await installationRequestService.verifyPaymentAndComplete(
             request.params.id,
             request.body,
             request.user

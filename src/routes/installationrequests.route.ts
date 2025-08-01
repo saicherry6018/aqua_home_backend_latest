@@ -3,17 +3,13 @@ import {
     createInstallationRequestSchema,
     getInstallationRequestsSchema,
     updateInstallationRequestStatusSchema,
-    completeInstallationSchema
 } from "../schemas/installation-request.schema";
 import {
     createInstallationRequest,
     getInstallationRequests,
     getInstallationRequestById,
     updateInstallationRequestStatus,
-    markInstallationComplete,
-    refreshPaymentStatus,
-    generatePaymentLink,
-    verifyPaymentAndComplete
+  
 } from "../controllers/installation-request.controller";
 import { UserRole } from "../types";
 
