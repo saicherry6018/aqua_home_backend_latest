@@ -316,26 +316,47 @@ export async function updateInstallationRequestStatus(
             try {
                 const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
                 
-                // Create Razorpay order
-                const razorpayOrder = await fastify.razorpay.orders.create({
-                    amount: amount * 100,
-                    currency: 'INR',
-                    notes: {
-                        type: request.orderType === 'RENTAL' ? 'deposit' : 'purchase',
-                        installationRequestId: requestId,
-                        customerId: request.customerId,
-                    }
-                });
-
-                updateData.razorpayOrderId = razorpayOrder.id;
-
-                // For rental orders, create auto-pay subscription after deposit
                 if (request.orderType === 'RENTAL') {
-                    // This will be handled in payment completion
+                    // For rentals, create autopay subscription for deposit + recurring payments
+                    const subscriptionData = {
+                        plan_id: `plan_rental_${request.productId}`, // You should create plans in Razorpay dashboard
+                        customer_notify: 1,
+                        quantity: 1,
+                        total_count: 12, // 12 months (adjust as needed)
+                        start_at: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // Start tomorrow
+                        addons: [{
+                            item: {
+                                name: 'Installation Deposit',
+                                amount: amount * 100,
+                                currency: 'INR'
+                            }
+                        }],
+                        notes: {
+                            type: 'rental_with_deposit',
+                            installationRequestId: requestId,
+                            customerId: request.customerId,
+                            productId: request.productId
+                        }
+                    };
+
+                    const razorpaySubscription = await fastify.razorpay.subscriptions.create(subscriptionData);
+                    updateData.razorpaySubscriptionId = razorpaySubscription.id;
                     updateData.autoPaymentEnabled = true;
+                } else {
+                    // For purchase, create single payment order
+                    const razorpayOrder = await fastify.razorpay.orders.create({
+                        amount: amount * 100,
+                        currency: 'INR',
+                        notes: {
+                            type: 'purchase',
+                            installationRequestId: requestId,
+                            customerId: request.customerId,
+                        }
+                    });
+                    updateData.razorpayOrderId = razorpayOrder.id;
                 }
             } catch (error) {
-                console.error('Failed to create payment order:', error);
+                console.error('Failed to create payment setup:', error);
             }
         }
     }
@@ -537,8 +558,8 @@ export async function generatePaymentLink(
         throw notFound('Installation request');
     }
 
-    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
-        throw badRequest('Installation must be in payment pending state to generate payment link');
+    if (![InstallationRequestStatus.PAYMENT_PENDING, InstallationRequestStatus.INSTALLATION_IN_PROGRESS].includes(request.status)) {
+        throw badRequest('Installation must be in progress or payment pending state to generate payment link');
     }
 
     // Check permissions
@@ -556,23 +577,89 @@ export async function generatePaymentLink(
     const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
 
     try {
-        // Create Razorpay order
-        const razorpayOrder = await fastify.razorpay.orders.create({
-            amount: amount * 100, // Amount in paise
-            currency: 'INR',
-            notes: {
-                type: request.orderType === 'RENTAL' ? 'deposit' : 'purchase',
-                installationRequestId: requestId,
-                customerId: request.customerId,
-            }
-        });
+        let paymentLink: any = {};
+        let updateData: any = { updatedAt: new Date().toISOString() };
 
-        // Update installation request with payment order ID
+        if (request.orderType === 'RENTAL') {
+            // For rentals, create autopay subscription
+            if (!request.razorpaySubscriptionId) {
+                const subscriptionData = {
+                    plan_id: `plan_rental_${request.productId}`,
+                    customer_notify: 1,
+                    quantity: 1,
+                    total_count: 12,
+                    start_at: Math.floor(Date.now() / 1000) + (24 * 60 * 60),
+                    addons: [{
+                        item: {
+                            name: 'Installation Deposit',
+                            amount: amount * 100,
+                            currency: 'INR'
+                        }
+                    }],
+                    notes: {
+                        type: 'rental_with_deposit',
+                        installationRequestId: requestId,
+                        customerId: request.customerId,
+                        productId: request.productId
+                    }
+                };
+
+                const razorpaySubscription = await fastify.razorpay.subscriptions.create(subscriptionData);
+                updateData.razorpaySubscriptionId = razorpaySubscription.id;
+                updateData.autoPaymentEnabled = true;
+
+                paymentLink = {
+                    subscriptionId: razorpaySubscription.id,
+                    amount: amount,
+                    currency: 'INR',
+                    keyId: process.env.RAZORPAY_KEY_ID,
+                    type: 'subscription',
+                    shortUrl: razorpaySubscription.short_url
+                };
+            } else {
+                paymentLink = {
+                    subscriptionId: request.razorpaySubscriptionId,
+                    amount: amount,
+                    currency: 'INR',
+                    keyId: process.env.RAZORPAY_KEY_ID,
+                    type: 'subscription'
+                };
+            }
+        } else {
+            // For purchase, create single payment order
+            if (!request.razorpayOrderId) {
+                const razorpayOrder = await fastify.razorpay.orders.create({
+                    amount: amount * 100,
+                    currency: 'INR',
+                    notes: {
+                        type: 'purchase',
+                        installationRequestId: requestId,
+                        customerId: request.customerId,
+                    }
+                });
+
+                updateData.razorpayOrderId = razorpayOrder.id;
+                paymentLink = {
+                    orderId: razorpayOrder.id,
+                    amount: amount,
+                    currency: 'INR',
+                    keyId: process.env.RAZORPAY_KEY_ID,
+                    type: 'order'
+                };
+            } else {
+                paymentLink = {
+                    orderId: request.razorpayOrderId,
+                    amount: amount,
+                    currency: 'INR',
+                    keyId: process.env.RAZORPAY_KEY_ID,
+                    type: 'order'
+                };
+            }
+        }
+
+        // Update installation request
         await db.update(installationRequests)
-            .set({
-                razorpayOrderId: razorpayOrder.id,
-                updatedAt: new Date().toISOString()
-            })
+            .set(updateData)
             .where(eq(installationRequests.id, requestId));
 
         // Log action history
@@ -583,23 +670,18 @@ export async function generatePaymentLink(
             performedByRole: user.role,
             comment: 'Payment link generated',
             metadata: JSON.stringify({
-                razorpayOrderId: razorpayOrder.id,
-                amount: amount
+                paymentType: request.orderType,
+                amount: amount,
+                ...updateData
             })
         });
 
         return {
             message: 'Payment link generated successfully',
-            paymentLink: {
-                orderId: razorpayOrder.id,
-                amount: amount,
-                currency: 'INR',
-                keyId: process.env.RAZORPAY_KEY_ID,
-                qrCodeData: `upi://pay?pa=merchant@upi&pn=Merchant&am=${amount}&cu=INR&tn=${encodeURIComponent(`Payment for ${request.product.name}`)}`
-            }
+            paymentLink
         };
     } catch (error) {
-        console.error('Failed to create Razorpay order:', error);
+        console.error('Failed to create payment setup:', error);
         throw badRequest('Failed to generate payment link');
     }
 }
@@ -624,19 +706,47 @@ export async function refreshPaymentStatus(
         throw badRequest('Installation must be in payment pending state');
     }
 
-    if (!request.razorpayOrderId) {
-        throw badRequest('No payment order found for this request');
+    if (!request.razorpayOrderId && !request.razorpaySubscriptionId) {
+        throw badRequest('No payment order or subscription found for this request');
     }
 
     try {
-        const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
-        const successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
+        let successfulPayment = null;
+
+        // Check subscription payments for rental orders
+        if (request.razorpaySubscriptionId && request.orderType === 'RENTAL') {
+            const subscription = await fastify.razorpay.subscriptions.fetch(request.razorpaySubscriptionId);
+            if (subscription.status === 'active' || subscription.status === 'authenticated') {
+                // For subscriptions, check if first payment (deposit) is completed
+                const invoices = await fastify.razorpay.invoices.all({
+                    subscription_id: request.razorpaySubscriptionId,
+                    count: 1
+                });
+                
+                if (invoices.items.length > 0 && invoices.items[0].status === 'paid') {
+                    successfulPayment = {
+                        id: invoices.items[0].payment_id,
+                        amount: invoices.items[0].amount,
+                        method: 'RAZORPAY_SUBSCRIPTION'
+                    };
+                }
+            }
+        }
+        
+        // Check regular order payments for purchase orders
+        if (!successfulPayment && request.razorpayOrderId) {
+            const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
+            successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
+            if (successfulPayment) {
+                successfulPayment.method = 'RAZORPAY';
+            }
+        }
         
         if (successfulPayment) {
             // Payment found, complete the installation
             await completeInstallationWithPayment(requestId, {
                 razorpayPaymentId: successfulPayment.id,
-                method: 'RAZORPAY',
+                method: successfulPayment.method,
                 amount: successfulPayment.amount / 100
             }, user);
 
@@ -644,7 +754,7 @@ export async function refreshPaymentStatus(
                 message: 'Payment verified and installation completed',
                 paymentStatus: 'COMPLETED',
                 paymentDetails: {
-                    method: 'RAZORPAY',
+                    method: successfulPayment.method,
                     amount: successfulPayment.amount / 100,
                     transactionId: successfulPayment.id
                 }

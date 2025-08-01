@@ -84,7 +84,9 @@ export const installationRequests = sqliteTable('installation_requests', {
     status: text('status', { enum: Object.values(InstallationRequestStatus) }).notNull().default(InstallationRequestStatus.SUBMITTED),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    razorpayOrderId: text('razorpay_order_id')
+    razorpayOrderId: text('razorpay_order_id'),
+    razorpaySubscriptionId: text('razorpay_subscription_id'),
+    autoPaymentEnabled: boolean('auto_payment_enabled').default(false),
 });
 
 // Subscriptions table - ONLY for RENTAL orders (not purchases)
@@ -129,6 +131,9 @@ export const serviceRequests = sqliteTable("service_requests", {
     afterImages: text("after_images"), // JSON array - agent uploads after service
     requiresPayment: integer("requires_payment", { mode: "boolean" }).default(false),
     paymentAmount: integer("payment_amount"), // Service charge if applicable
+    razorpayOrderId: text('razorpay_order_id'),
+    razorpaySubscriptionId: text('razorpay_subscription_id'),
+    autoPaymentEnabled: boolean('auto_payment_enabled').default(false),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`)
 });

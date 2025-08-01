@@ -20,6 +20,16 @@ export const UserInServiceRequestSchema = z.object({
 });
 
 // Service Request Schema - Updated to handle both subscription and installation cases
+// Payment Status Schema for service requests
+export const PaymentStatusSchema = z.object({
+  status: z.string(), // 'PENDING', 'COMPLETED', 'FAILED', etc.
+  amount: z.number().optional().nullable(),
+  method: z.string().optional().nullable(),
+  paidDate: z.string().optional().nullable(),
+  razorpayOrderId: z.string().optional().nullable(),
+  razorpaySubscriptionId: z.string().optional().nullable(),
+});
+
 export const ServiceRequestSchema = z.object({
   id: z.string(),
   subscriptionId: z.string().optional().nullable(), // For rental customers
@@ -38,11 +48,15 @@ export const ServiceRequestSchema = z.object({
   afterImages: z.array(z.string()).optional().nullable(), // Agent uploads after service
   requiresPayment: z.boolean().optional().default(false),
   paymentAmount: z.number().optional().nullable(),
+  razorpayOrderId: z.string().optional().nullable(),
+  razorpaySubscriptionId: z.string().optional().nullable(),
+  autoPaymentEnabled: z.boolean().optional().default(false),
   createdAt: z.string(),
   updatedAt: z.string(),
   customer: UserInServiceRequestSchema.optional().nullable(),
   product: ProductSchema.optional().nullable(),
   assignedTo: UserInServiceRequestSchema.optional().nullable(),
+  paymentStatus: PaymentStatusSchema.optional().nullable(),
 });
 
 // Create Service Request

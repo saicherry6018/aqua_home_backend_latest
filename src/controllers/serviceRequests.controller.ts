@@ -1,7 +1,8 @@
-import { FastifyRequest, FastifyReply } from 'fastify';
+import { FastifyRequest, FastifyReply } from "fastify";
 import * as serviceRequestService from '../services/serviceRequests.service';
-import { handleError, notFound, badRequest, forbidden } from '../utils/errors';
-import { UserRole } from '../types';
+import * as installationRequestService from '../services/installation-request.service';
+import { handleError, forbidden, notFound } from "../utils/errors";
+import { ServiceRequestStatus, UserRole } from '../types';
 
 // Get all service requests
 export async function getAllServiceRequests(
@@ -33,10 +34,10 @@ export async function getServiceRequestById(
 
     console.log('service request', sr);
     console.log('user is', user);
-    
+
     // Permission: admin, franchise owner (same franchise), assigned agent, or customer
     let hasPermission = false;
-    
+
     if (user.role === UserRole.ADMIN) {
       hasPermission = true;
     } else if (user.role === UserRole.CUSTOMER && sr.customerId === user.userId) {
@@ -49,7 +50,7 @@ export async function getServiceRequestById(
       const franchise = await serviceRequestService.getFranchiseById(sr.franchiseId);
       hasPermission = userFromDb && franchise && franchise.ownerId === user.userId;
     }
-    
+
     if (!hasPermission) throw forbidden('You do not have permission to view this service request');
     return reply.code(200).send({ serviceRequest: sr });
   } catch (error) {
@@ -57,14 +58,24 @@ export async function getServiceRequestById(
   }
 }
 
-// Create a new service request - Updated to handle form-data and remove orders
 export async function createServiceRequest(
-  request: FastifyRequest,
+  request: FastifyRequest<{
+    Body: {
+      subscriptionId?: string;
+      productId: string;
+      type: string;
+      description: string;
+      images?: string[];
+      scheduledDate?: string;
+      requiresPayment?: boolean;
+      paymentAmount?: number;
+    }
+  }>,
   reply: FastifyReply
 ) {
   try {
     const user = request.user;
-    
+
     // Handle form-data parsing
     const parts = request.parts();
     const fields: Record<string, any> = {};
@@ -79,7 +90,7 @@ export async function createServiceRequest(
           chunks.push(chunk);
         }
         const buffer = Buffer.concat(chunks);
-        
+
         // Upload to S3 if available
         if (request.server.uploadToS3) {
           const uploadedUrl = await request.server.uploadToS3(buffer, filename, part.mimetype);
@@ -183,9 +194,114 @@ export async function scheduleServiceRequest(
     const { id } = request.params;
     const { scheduledDate } = request.body;
     const user = request.user;
-    
+
     const sr = await serviceRequestService.scheduleServiceRequest(id, scheduledDate, user);
     return reply.code(200).send({ message: 'Service request scheduled', serviceRequest: sr });
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+export async function generateInstallationPaymentLink(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const serviceRequest = await serviceRequestService.getServiceRequestById(request.params.id);
+
+    if (!serviceRequest) {
+      throw notFound('Service request');
+    }
+
+    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
+      throw forbidden('This endpoint is only for installation service requests');
+    }
+
+    // Check if user has permission (assigned agent, franchise owner, or admin)
+    if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
+      throw forbidden('You can only generate payment links for your assigned requests');
+    }
+
+    const result = await installationRequestService.generatePaymentLink(
+      serviceRequest.installationRequestId,
+      request.user
+    );
+
+    return reply.code(200).send(result);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+export async function refreshInstallationPaymentStatus(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const serviceRequest = await serviceRequestService.getServiceRequestById(request.params.id);
+
+    if (!serviceRequest) {
+      throw notFound('Service request');
+    }
+
+    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
+      throw forbidden('This endpoint is only for installation service requests');
+    }
+
+    // Check if user has permission
+    if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
+      throw forbidden('You can only check payment status for your assigned requests');
+    }
+
+    const result = await installationRequestService.refreshPaymentStatus(
+      serviceRequest.installationRequestId,
+      request.user
+    );
+
+    return reply.code(200).send(result);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+export async function uploadPaymentProof(
+  request: FastifyRequest<{
+    Params: { id: string };
+    Body: {
+      paymentMethod: 'CASH' | 'UPI';
+      paymentImage: string;
+      amount: number;
+      notes?: string;
+    }
+  }>,
+  reply: FastifyReply
+) {
+  try {
+    const serviceRequest = await serviceRequestService.getServiceRequestById(request.params.id);
+
+    if (!serviceRequest) {
+      throw notFound('Service request');
+    }
+
+    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
+      throw forbidden('This endpoint is only for installation service requests');
+    }
+
+    // Check if user has permission
+    if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
+      throw forbidden('You can only upload payment proof for your assigned requests');
+    }
+
+    const result = await installationRequestService.verifyPaymentAndComplete(
+      serviceRequest.installationRequestId,
+      {
+        paymentMethod: request.body.paymentMethod,
+        paymentImage: request.body.paymentImage
+      },
+      request.user
+    );
+
+    return reply.code(200).send(result);
   } catch (error) {
     handleError(error, request, reply);
   }
