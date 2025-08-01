@@ -219,16 +219,30 @@ export async function getInstallationRequestById(
             franchise: true,
             customer: true,
             assignedTechnician: true,
-            actionHistory:true
-        },
-
-
+            actionHistory: true
+        }
     });
 
-    return returnValue;
+    // Get payment status if in payment pending state
+    let paymentStatus = null;
+    if (returnValue?.status === InstallationRequestStatus.PAYMENT_PENDING) {
+        const payment = await db.query.payments.findFirst({
+            where: eq(payments.installationRequestId, requestId)
+        });
+        
+        paymentStatus = {
+            status: payment?.status || 'PENDING',
+            amount: request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice,
+            method: payment?.paymentMethod,
+            paidDate: payment?.paidDate,
+            razorpayOrderId: request.razorpayOrderId
+        };
+    }
 
-
-
+    return {
+        ...returnValue,
+        paymentStatus
+    };
 }
 
 export async function updateInstallationRequestStatus(
@@ -239,6 +253,8 @@ export async function updateInstallationRequestStatus(
         assignedTechnicianId?: string;
         scheduledDate?: string;
         rejectionReason?: string;
+        installationImages?: string[];
+        autoPayment?: boolean;
     },
     user: { userId: string; role: UserRole }
 ) {
@@ -246,11 +262,17 @@ export async function updateInstallationRequestStatus(
     const db = fastify.db;
     const request = await db.query.installationRequests.findFirst({
         where: eq(installationRequests.id, requestId),
-        with: { franchise: true }
+        with: { franchise: true, product: true, customer: true }
     });
 
     if (!request) {
         throw notFound('Installation request');
+    }
+
+    // Validate status transitions
+    const validTransitions = getValidStatusTransitions(request.status);
+    if (!validTransitions.includes(data.status)) {
+        throw badRequest(`Cannot transition from ${request.status} to ${data.status}`);
     }
 
     // Authorization check
@@ -261,9 +283,10 @@ export async function updateInstallationRequestStatus(
     }
 
     const currentStatus = request.status;
+    const now = new Date().toISOString();
     const updateData: any = {
         status: data.status,
-        updatedAt: new Date().toISOString()
+        updatedAt: now
     };
 
     // Handle status-specific updates
@@ -279,12 +302,55 @@ export async function updateInstallationRequestStatus(
         updateData.rejectionReason = data.rejectionReason;
     }
 
+    // Handle installation completion to payment pending
+    if (data.status === InstallationRequestStatus.PAYMENT_PENDING && currentStatus === InstallationRequestStatus.INSTALLATION_IN_PROGRESS) {
+        // Ensure installation images are provided
+        if (!data.installationImages || data.installationImages.length === 0) {
+            throw badRequest('Installation images are required before moving to payment pending');
+        }
+        
+        updateData.installationImages = JSON.stringify(data.installationImages);
+        
+        // Auto-generate payment link and setup auto payment if enabled
+        if (data.autoPayment) {
+            try {
+                const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
+                
+                // Create Razorpay order
+                const razorpayOrder = await fastify.razorpay.orders.create({
+                    amount: amount * 100,
+                    currency: 'INR',
+                    notes: {
+                        type: request.orderType === 'RENTAL' ? 'deposit' : 'purchase',
+                        installationRequestId: requestId,
+                        customerId: request.customerId,
+                    }
+                });
+
+                updateData.razorpayOrderId = razorpayOrder.id;
+
+                // For rental orders, create auto-pay subscription after deposit
+                if (request.orderType === 'RENTAL') {
+                    // This will be handled in payment completion
+                    updateData.autoPaymentEnabled = true;
+                }
+            } catch (error) {
+                console.error('Failed to create payment order:', error);
+            }
+        }
+    }
+
+    // Prevent direct completion without payment verification
+    if (data.status === InstallationRequestStatus.INSTALLATION_COMPLETED && currentStatus !== InstallationRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Installation cannot be completed directly. Must go through payment pending status first.');
+    }
+
     // Update request
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
         .where(eq(installationRequests.id, requestId)).returning();
 
-    // Handle service request status sync for installation service requests
+    // Handle service request status sync
     const relatedServiceRequest = await db.query.serviceRequests.findFirst({
         where: and(
             eq(serviceRequests.installationRequestId, requestId),
@@ -297,9 +363,21 @@ export async function updateInstallationRequestStatus(
         let serviceRequestActionType: ActionType | null = null;
 
         switch (data.status) {
+            case InstallationRequestStatus.FRANCHISE_CONTACTED:
+                serviceRequestStatus = 'ASSIGNED';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_ASSIGNED;
+                break;
+            case InstallationRequestStatus.INSTALLATION_SCHEDULED:
+                serviceRequestStatus = 'SCHEDULED';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_SCHEDULED;
+                break;
             case InstallationRequestStatus.INSTALLATION_IN_PROGRESS:
                 serviceRequestStatus = 'IN_PROGRESS';
                 serviceRequestActionType = ActionType.SERVICE_REQUEST_IN_PROGRESS;
+                break;
+            case InstallationRequestStatus.PAYMENT_PENDING:
+                serviceRequestStatus = 'PAYMENT_PENDING';
+                serviceRequestActionType = ActionType.SERVICE_REQUEST_COMPLETED;
                 break;
             case InstallationRequestStatus.INSTALLATION_COMPLETED:
                 serviceRequestStatus = 'COMPLETED';
@@ -316,14 +394,12 @@ export async function updateInstallationRequestStatus(
         }
 
         if (serviceRequestStatus && serviceRequestActionType) {
-            // Update service request status
             await db.update(serviceRequests).set({
                 status: serviceRequestStatus,
-                updatedAt: new Date().toISOString(),
-                ...(serviceRequestStatus === 'COMPLETED' && { completedDate: new Date().toISOString() })
+                updatedAt: now,
+                ...(serviceRequestStatus === 'COMPLETED' && { completedDate: now })
             }).where(eq(serviceRequests.id, relatedServiceRequest.id));
 
-            // Log action history for service request
             await logActionHistory({
                 serviceRequestId: relatedServiceRequest.id,
                 actionType: serviceRequestActionType,
@@ -331,8 +407,8 @@ export async function updateInstallationRequestStatus(
                 toStatus: serviceRequestStatus,
                 performedBy: user.userId,
                 performedByRole: user.role,
-                comment: `Service request status updated via installation request ${data.status}`,
-                metadata: JSON.stringify({ installationRequestId: requestId, installationRequestStatus: data.status })
+                comment: `Service request synced with installation request ${data.status}`,
+                metadata: JSON.stringify({ installationRequestId: requestId })
             });
         }
     }
@@ -349,14 +425,11 @@ export async function updateInstallationRequestStatus(
         metadata: JSON.stringify({
             assignedTechnicianId: data.assignedTechnicianId,
             scheduledDate: data.scheduledDate,
-            rejectionReason: data.rejectionReason
+            rejectionReason: data.rejectionReason,
+            installationImages: data.installationImages,
+            autoPayment: data.autoPayment
         })
     });
-
-    //TO-DO
-    // Send notifications based on status
-    // await notificationService.notifyStatusUpdate(requestId, data.status);
-
 
     return {
         message: `Installation request ${data.status.toLowerCase()} successfully`,
@@ -364,10 +437,10 @@ export async function updateInstallationRequestStatus(
     };
 }
 
-export async function markInstallationComplete(
+export async function markInstallationInProgress(
     requestId: string,
     data: {
-        installationImages: string[];
+        installationImages?: string[];
         notes?: string;
     },
     user: { userId: string; role: UserRole }
@@ -383,16 +456,16 @@ export async function markInstallationComplete(
         throw notFound('Installation request');
     }
 
-    if (request.status !== InstallationRequestStatus.INSTALLATION_IN_PROGRESS) {
-        throw badRequest('Installation must be in progress to mark complete');
+    if (request.status !== InstallationRequestStatus.INSTALLATION_SCHEDULED) {
+        throw badRequest('Installation must be scheduled to mark in progress');
     }
 
     const now = new Date().toISOString();
 
-    // Update installation request to payment pending
+    // Update installation request to in progress
     await db.update(installationRequests)
         .set({
-            status: InstallationRequestStatus.PAYMENT_PENDING,
+            status: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
             updatedAt: now
         })
         .where(eq(installationRequests.id, requestId));
@@ -407,19 +480,19 @@ export async function markInstallationComplete(
 
     if (relatedServiceRequest) {
         await db.update(serviceRequests).set({
-            status: 'PAYMENT_PENDING',
+            status: 'IN_PROGRESS',
             updatedAt: now
         }).where(eq(serviceRequests.id, relatedServiceRequest.id));
 
         // Log action history for service request
         await logActionHistory({
             serviceRequestId: relatedServiceRequest.id,
-            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+            actionType: ActionType.SERVICE_REQUEST_IN_PROGRESS,
             fromStatus: relatedServiceRequest.status,
-            toStatus: 'PAYMENT_PENDING',
+            toStatus: 'IN_PROGRESS',
             performedBy: user.userId,
             performedByRole: user.role,
-            comment: `Installation completed, payment pending`,
+            comment: data.notes,
             metadata: JSON.stringify({ installationRequestId: requestId })
         });
     }
@@ -427,22 +500,22 @@ export async function markInstallationComplete(
     // Log action history
     await logActionHistory({
         installationRequestId: requestId,
-        actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
-        fromStatus: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
-        toStatus: InstallationRequestStatus.PAYMENT_PENDING,
+        actionType: ActionType.INSTALLATION_REQUEST_IN_PROGRESS,
+        fromStatus: InstallationRequestStatus.INSTALLATION_SCHEDULED,
+        toStatus: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
         performedBy: user.userId,
         performedByRole: user.role,
         comment: data.notes,
         metadata: JSON.stringify({
-            installationImages: data.installationImages
+            installationImages: data.installationImages || []
         })
     });
 
     return {
-        message: 'Installation marked complete, payment pending',
+        message: 'Installation marked in progress',
         installationRequest: {
             id: requestId,
-            status: InstallationRequestStatus.PAYMENT_PENDING,
+            status: InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
             updatedAt: now
         }
     };
@@ -528,6 +601,64 @@ export async function generatePaymentLink(
     } catch (error) {
         console.error('Failed to create Razorpay order:', error);
         throw badRequest('Failed to generate payment link');
+    }
+}
+
+export async function refreshPaymentStatus(
+    requestId: string,
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    
+    const request = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: { product: true, customer: true }
+    });
+
+    if (!request) {
+        throw notFound('Installation request');
+    }
+
+    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Installation must be in payment pending state');
+    }
+
+    if (!request.razorpayOrderId) {
+        throw badRequest('No payment order found for this request');
+    }
+
+    try {
+        const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
+        const successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
+        
+        if (successfulPayment) {
+            // Payment found, complete the installation
+            await completeInstallationWithPayment(requestId, {
+                razorpayPaymentId: successfulPayment.id,
+                method: 'RAZORPAY',
+                amount: successfulPayment.amount / 100
+            }, user);
+
+            return {
+                message: 'Payment verified and installation completed',
+                paymentStatus: 'COMPLETED',
+                paymentDetails: {
+                    method: 'RAZORPAY',
+                    amount: successfulPayment.amount / 100,
+                    transactionId: successfulPayment.id
+                }
+            };
+        } else {
+            return {
+                message: 'Payment not yet received',
+                paymentStatus: 'PENDING',
+                paymentDetails: null
+            };
+        }
+    } catch (error) {
+        console.error('Error checking payment status:', error);
+        throw badRequest('Failed to check payment status');
     }
 }
 
@@ -764,6 +895,159 @@ function getNextMonthDate(dateString: string): string {
     const date = new Date(dateString);
     date.setMonth(date.getMonth() + 1);
     return date.toISOString();
+}
+
+function getValidStatusTransitions(currentStatus: InstallationRequestStatus): InstallationRequestStatus[] {
+    const transitions: Record<InstallationRequestStatus, InstallationRequestStatus[]> = {
+        [InstallationRequestStatus.SUBMITTED]: [
+            InstallationRequestStatus.REJECTED,
+            InstallationRequestStatus.FRANCHISE_CONTACTED
+        ],
+        [InstallationRequestStatus.FRANCHISE_CONTACTED]: [
+            InstallationRequestStatus.INSTALLATION_SCHEDULED,
+            InstallationRequestStatus.CANCELLED
+        ],
+        [InstallationRequestStatus.INSTALLATION_SCHEDULED]: [
+            InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
+            InstallationRequestStatus.CANCELLED
+        ],
+        [InstallationRequestStatus.INSTALLATION_IN_PROGRESS]: [
+            InstallationRequestStatus.PAYMENT_PENDING,
+            InstallationRequestStatus.CANCELLED
+        ],
+        [InstallationRequestStatus.PAYMENT_PENDING]: [
+            InstallationRequestStatus.INSTALLATION_COMPLETED
+        ],
+        [InstallationRequestStatus.CANCELLED]: [
+            InstallationRequestStatus.FRANCHISE_CONTACTED,
+            InstallationRequestStatus.INSTALLATION_SCHEDULED,
+            InstallationRequestStatus.INSTALLATION_IN_PROGRESS
+        ],
+        [InstallationRequestStatus.REJECTED]: [],
+        [InstallationRequestStatus.INSTALLATION_COMPLETED]: []
+    };
+
+    return transitions[currentStatus] || [];
+}
+
+async function completeInstallationWithPayment(
+    requestId: string,
+    paymentDetails: {
+        razorpayPaymentId?: string;
+        method: string;
+        amount: number;
+        paymentImage?: string;
+    },
+    user: { userId: string; role: UserRole }
+) {
+    const fastify = getFastifyInstance();
+    const db = fastify.db;
+    
+    const request = await db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, requestId),
+        with: { product: true, customer: true }
+    });
+
+    if (!request) {
+        throw notFound('Installation request');
+    }
+
+    const now = new Date().toISOString();
+    let connectId: string | null = null;
+    let subscription = null;
+
+    // For RENTAL orders, create subscription
+    if (request.orderType === 'RENTAL') {
+        connectId = generateConnectId();
+        const subscriptionId = uuidv4();
+
+        await db.insert(subscriptions).values({
+            id: subscriptionId,
+            connectId,
+            requestId: requestId,
+            customerId: request.customerId,
+            productId: request.productId,
+            franchiseId: request.franchiseId,
+            planName: `${request.product.name} Rental Plan`,
+            status: 'ACTIVE',
+            startDate: now,
+            currentPeriodStartDate: now,
+            currentPeriodEndDate: getNextMonthDate(now),
+            nextPaymentDate: getNextMonthDate(now),
+            monthlyAmount: request.product.rentPrice,
+            depositAmount: request.product.deposit,
+            createdAt: now,
+            updatedAt: now
+        });
+
+        subscription = { id: subscriptionId, connectId };
+    }
+
+    // Record payment
+    await recordDepositPayment(
+        subscription?.id || null,
+        paymentDetails.amount,
+        {
+            depositPaymentMethod: paymentDetails.method,
+            depositReceiptImage: paymentDetails.paymentImage
+        },
+        request.orderType === 'PURCHASE' ? requestId : undefined
+    );
+
+    // Update installation request to completed
+    await db.update(installationRequests)
+        .set({
+            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
+            connectId,
+            completedDate: now,
+            updatedAt: now
+        })
+        .where(eq(installationRequests.id, requestId));
+
+    // Update related service request
+    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
+        where: and(
+            eq(serviceRequests.installationRequestId, requestId),
+            eq(serviceRequests.type, 'INSTALLATION')
+        )
+    });
+
+    if (relatedServiceRequest) {
+        await db.update(serviceRequests).set({
+            status: 'COMPLETED',
+            completedDate: now,
+            updatedAt: now
+        }).where(eq(serviceRequests.id, relatedServiceRequest.id));
+
+        await logActionHistory({
+            serviceRequestId: relatedServiceRequest.id,
+            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+            fromStatus: 'PAYMENT_PENDING',
+            toStatus: 'COMPLETED',
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: `Payment verified, installation completed`,
+            metadata: JSON.stringify({ installationRequestId: requestId, connectId })
+        });
+    }
+
+    // Log action history
+    await logActionHistory({
+        installationRequestId: requestId,
+        actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
+        fromStatus: InstallationRequestStatus.PAYMENT_PENDING,
+        toStatus: InstallationRequestStatus.INSTALLATION_COMPLETED,
+        performedBy: user.userId,
+        performedByRole: user.role,
+        comment: 'Payment verified and installation completed',
+        metadata: JSON.stringify({
+            connectId,
+            paymentMethod: paymentDetails.method,
+            razorpayPaymentId: paymentDetails.razorpayPaymentId
+        })
+    });
+
+    return { connectId, subscription };
 }
 
 async function recordDepositPayment(

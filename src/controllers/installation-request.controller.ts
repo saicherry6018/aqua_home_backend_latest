@@ -87,6 +87,8 @@ interface UpdateStatusBody {
     assignedTechnicianId?: string;
     scheduledDate?: string;
     rejectionReason?: string;
+    installationImages?: string[];
+    autoPayment?: boolean;
 }
 
 export async function updateInstallationRequestStatus(
@@ -118,20 +120,13 @@ interface CompleteInstallationBody {
     razorpayCustomerId?: string;
 }
 
-export async function markInstallationComplete(
-    request: FastifyRequest<{
-        Params: { id: string };
-        Body: {
-            installationImages: string[];
-            notes?: string;
-        };
-    }>,
+export async function refreshPaymentStatus(
+    request: FastifyRequest<{ Params: { id: string } }>,
     reply: FastifyReply
 ) {
     try {
-        const result = await installationRequestService.markInstallationComplete(
+        const result = await installationRequestService.refreshPaymentStatus(
             request.params.id,
-            request.body,
             request.user
         );
 
@@ -148,6 +143,35 @@ export async function generatePaymentLink(
     try {
         const result = await installationRequestService.generatePaymentLink(
             request.params.id,
+            request.user
+        );
+
+        return reply.code(200).send(result);
+    } catch (error) {
+        handleError(error, request, reply);
+    }
+}
+
+export async function markInstallationComplete(
+    request: FastifyRequest<{
+        Params: { id: string };
+        Body: {
+            installationImages?: string[];
+            notes?: string;
+            autoPayment?: boolean;
+        };
+    }>,
+    reply: FastifyReply
+) {
+    try {
+        const result = await installationRequestService.updateInstallationRequestStatus(
+            request.params.id,
+            {
+                status: InstallationRequestStatus.PAYMENT_PENDING,
+                comment: request.body.notes,
+                installationImages: request.body.installationImages,
+                autoPayment: request.body.autoPayment
+            },
             request.user
         );
 

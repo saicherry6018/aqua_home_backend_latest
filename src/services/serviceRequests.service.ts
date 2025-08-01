@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
-import { serviceRequests, users, products, subscriptions, installationRequests, franchises } from '../models/schema';
+import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments } from '../models/schema';
 import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
@@ -98,6 +98,29 @@ export async function getServiceRequestById(id: string) {
 
   if (!result) return null;
 
+  // Get payment status for installation service requests
+  let paymentStatus = null;
+  if (result.type === 'INSTALLATION' && result.installationRequestId) {
+    const installationRequest = await fastify.db.query.installationRequests.findFirst({
+      where: eq(installationRequests.id, result.installationRequestId),
+      with: { product: true }
+    });
+
+    if (installationRequest?.status === 'PAYMENT_PENDING') {
+      const payment = await fastify.db.query.payments.findFirst({
+        where: eq(payments.installationRequestId, result.installationRequestId)
+      });
+      
+      paymentStatus = {
+        status: payment?.status || 'PENDING',
+        amount: installationRequest.orderType === 'RENTAL' ? installationRequest.product.deposit : installationRequest.product.buyPrice,
+        method: payment?.paymentMethod,
+        paidDate: payment?.paidDate,
+        razorpayOrderId: installationRequest.razorpayOrderId
+      };
+    }
+  }
+
   // Process result to ensure proper data structure and parse images
   return {
     ...result,
@@ -107,7 +130,8 @@ export async function getServiceRequestById(id: string) {
     product: result.product ? {
       ...result.product,
       images: parseJsonSafe<string[]>(result.product.images as any, [])
-    } : null
+    } : null,
+    paymentStatus
   };
 }
 
@@ -344,8 +368,18 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     updatedAt: new Date().toISOString(),
   };
 
-  // Handle completion
+  // Handle completion - check payment status for installation requests
   if (status === ServiceRequestStatus.COMPLETED) {
+    // For installation service requests, ensure payment is completed before marking as completed
+    if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
+      const installationRequest = await fastify.db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, sr.installationRequestId)
+      });
+      
+      if (installationRequest?.status !== InstallationRequestStatus.INSTALLATION_COMPLETED) {
+        throw badRequest('Installation cannot be completed without payment verification. Use PAYMENT_PENDING status first.');
+      }
+    }
     updateData.completedDate = new Date().toISOString();
   }
 
