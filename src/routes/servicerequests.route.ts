@@ -17,6 +17,13 @@ import {
   scheduleServiceRequestSchema,
 } from '../schemas/servicerequests.schema';
 import { UserRole } from '../types';
+import {
+  markAsStarted,
+  markAsCompleted,
+  generateInstallationPaymentLink,
+  refreshInstallationPaymentStatus,
+  uploadPaymentProof
+} from '../controllers/serviceRequests.controller';
 
 export default async function (fastify: FastifyInstance) {
   // Get all service requests (admin, franchise owner, service agent, customer)
@@ -130,6 +137,29 @@ export default async function (fastify: FastifyInstance) {
     },
     (request, reply) => scheduleServiceRequest(request as any, reply as any)
   );
+
+    // Mark service request as started
+  fastify.put('/:id/start', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, markAsStarted);
+
+  // Mark service request as completed
+  fastify.put('/:id/complete', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, markAsCompleted);
+
+  // Service agent specific routes for installation requests
+  fastify.post('/:id/generate-payment-link', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, generateInstallationPaymentLink);
+
+  fastify.post('/:id/refresh-payment-status', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, refreshInstallationPaymentStatus);
+
+  fastify.post('/:id/upload-payment-proof', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, uploadPaymentProof);
 
   fastify.log.info('Service Request routes registered');
 }
