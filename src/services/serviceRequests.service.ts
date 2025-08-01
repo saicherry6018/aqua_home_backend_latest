@@ -267,6 +267,18 @@ export async function createInstallationServiceRequest(data: {
     assignedTechnicianId: data.assignedToId
   }).where(eq(installationRequests.id, installationRequest.id))
 
+  // Log action history for installation request status update
+  await logActionHistory({
+    installationRequestId: data.installationRequestId,
+    actionType: ActionType.INSTALLATION_REQUEST_SCHEDULED,
+    fromStatus: installationRequest.status,
+    toStatus: InstallationRequestStatus.INSTALLATION_SCHEDULED,
+    performedBy: user.userId,
+    performedByRole: user.role,
+    comment: `Installation scheduled via service request creation`,
+    metadata: { serviceRequestId: id, assignedTechnicianId: data.assignedToId }
+  })
+
   // Log action history
   await logActionHistory(createServiceRequestStatusAction(
     id,
@@ -336,7 +348,54 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
   await fastify.db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
 
-  // Log action history
+  // Handle installation request status sync for installation service requests
+  if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
+    let installationStatus: InstallationRequestStatus | null = null;
+    let installationActionType: ActionType | null = null;
+
+    switch (status) {
+      case ServiceRequestStatus.IN_PROGRESS:
+        installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
+        installationActionType = ActionType.INSTALLATION_REQUEST_IN_PROGRESS;
+        break;
+      case ServiceRequestStatus.COMPLETED:
+        installationStatus = InstallationRequestStatus.INSTALLATION_COMPLETED;
+        installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+        break;
+      case ServiceRequestStatus.CANCELLED:
+        installationStatus = InstallationRequestStatus.CANCELLED;
+        installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
+        break;
+    }
+
+    if (installationStatus && installationActionType) {
+      // Get current installation request status
+      const currentInstallationRequest = await fastify.db.query.installationRequests.findFirst({
+        where: eq(installationRequests.id, sr.installationRequestId)
+      });
+
+      // Update installation request status
+      await fastify.db.update(installationRequests).set({
+        status: installationStatus,
+        updatedAt: new Date().toISOString(),
+        ...(status === ServiceRequestStatus.COMPLETED && { completedDate: new Date().toISOString() })
+      }).where(eq(installationRequests.id, sr.installationRequestId));
+
+      // Log action history for installation request
+      await logActionHistory({
+        installationRequestId: sr.installationRequestId,
+        actionType: installationActionType,
+        fromStatus: currentInstallationRequest?.status,
+        toStatus: installationStatus,
+        performedBy: user.userId,
+        performedByRole: user.role,
+        comment: `Installation request status updated via service request ${status}`,
+        metadata: { serviceRequestId: id, serviceRequestStatus: status }
+      });
+    }
+  }
+
+  // Log action history for service request
   const actionType = getActionTypeForStatus(status);
   await logActionHistory(createServiceRequestStatusAction(
     id,
