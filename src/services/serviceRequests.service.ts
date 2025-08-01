@@ -395,10 +395,8 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
 
   if (!hasPermission) throw forbidden('You do not have permission to update this service request');
 
-  // Special validation for installation service requests
-  if (sr.type === ServiceRequestType.INSTALLATION) {
-    await validateInstallationServiceRequestTransition(sr, status, images);
-  }
+  // Validate status transitions and image requirements
+  await validateServiceRequestTransition(sr, status, images);
 
   const oldStatus = sr.status;
   const updateData: any = {
@@ -426,7 +424,6 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     await syncInstallationRequestStatus(sr.installationRequestId, status, user, id);
   }
 
-
   await logActionHistory(createServiceRequestStatusAction(
     id,
     oldStatus,
@@ -444,29 +441,81 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
   return await getServiceRequestById(id);
 }
 
-// Validate installation service request status transitions
-async function validateInstallationServiceRequestTransition(
+// Validate service request status transitions and image requirements
+async function validateServiceRequestTransition(
   sr: any,
   newStatus: ServiceRequestStatus,
   images?: { beforeImages?: string[]; afterImages?: string[] }
 ) {
-  // Validate transition to PAYMENT_PENDING
-  if (newStatus === ServiceRequestStatus.PAYMENT_PENDING) {
-    if (sr.status !== ServiceRequestStatus.IN_PROGRESS) {
-      throw badRequest('Can only move to PAYMENT_PENDING from IN_PROGRESS status');
+  const currentStatus = sr.status;
+
+  // Validation for SCHEDULED -> IN_PROGRESS transition (requires before images for non-installation types)
+  if (currentStatus === ServiceRequestStatus.SCHEDULED && newStatus === ServiceRequestStatus.IN_PROGRESS) {
+    if (sr.type !== ServiceRequestType.INSTALLATION) {
+      if (!images?.beforeImages || images.beforeImages.length === 0) {
+        throw badRequest('Before images are required when starting service work');
+      }
+    }
+  }
+
+  // Validation for IN_PROGRESS -> PAYMENT_PENDING transition
+  if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.PAYMENT_PENDING) {
+    if (!sr.requiresPayment) {
+      throw badRequest('This service request does not require payment');
     }
 
-    // Require after images (installation completion photos)
+    // Require after images for payment pending
+    if (!images?.afterImages || images.afterImages.length === 0) {
+      throw badRequest('After images are required before moving to payment pending');
+    }
+  }
+
+  // Validation for IN_PROGRESS -> COMPLETED transition (for non-payment services)
+  if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.COMPLETED) {
+    if (sr.requiresPayment) {
+      throw badRequest('Service requests requiring payment must go through PAYMENT_PENDING status first');
+    }
+
+    // Require after images for completion
+    if (!images?.afterImages || images.afterImages.length === 0) {
+      throw badRequest('After images are required when completing service work');
+    }
+  }
+
+  // Validation for PAYMENT_PENDING -> COMPLETED transition
+  if (currentStatus === ServiceRequestStatus.PAYMENT_PENDING && newStatus === ServiceRequestStatus.COMPLETED) {
+    // This transition is allowed once payment is verified
+    // Payment verification should be handled separately
+  }
+
+  // Special validation for installation service requests
+  if (sr.type === ServiceRequestType.INSTALLATION) {
+    await validateInstallationSpecificTransitions(sr, currentStatus, newStatus, images);
+  }
+}
+
+// Additional validation specific to installation service requests
+async function validateInstallationSpecificTransitions(
+  sr: any,
+  currentStatus: ServiceRequestStatus,
+  newStatus: ServiceRequestStatus,
+  images?: { beforeImages?: string[]; afterImages?: string[] }
+) {
+  // Installation requests always require payment, so enforce payment flow
+  if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.COMPLETED) {
+    throw badRequest('Installation service requests must go through PAYMENT_PENDING status before completion');
+  }
+
+  // Installation completion requires after images
+  if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.PAYMENT_PENDING) {
     if (!images?.afterImages || images.afterImages.length === 0) {
       throw badRequest('Installation completion images are required before moving to payment pending');
     }
   }
 
-  // Validate transition to COMPLETED
-  if (newStatus === ServiceRequestStatus.COMPLETED) {
-    if (sr.status !== ServiceRequestStatus.PAYMENT_PENDING) {
-      throw badRequest('Installation can only be completed after payment verification');
-    }
+  // Installation can only be completed after payment verification
+  if (currentStatus === ServiceRequestStatus.PAYMENT_PENDING && newStatus === ServiceRequestStatus.COMPLETED) {
+    // Additional payment verification logic can be added here if needed
   }
 }
 

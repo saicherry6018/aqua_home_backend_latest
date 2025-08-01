@@ -160,9 +160,49 @@ export async function updateServiceRequestStatus(
 ) {
   try {
     const { id } = request.params;
-    const { status, beforeImages, afterImages } = request.body;
     const user = request.user;
-    const sr = await serviceRequestService.updateServiceRequestStatus(id, status, user, { beforeImages, afterImages });
+
+    // Handle form-data parsing for image uploads
+    const parts = request.parts();
+    const fields: Record<string, any> = {};
+    const beforeImages: string[] = [];
+    const afterImages: string[] = [];
+
+    for await (const part of parts) {
+      if (part.file) {
+        // Handle image file uploads
+        const filename = `service-requests/${id}/${Date.now()}-${part.filename}`;
+        const chunks: Buffer[] = [];
+        for await (const chunk of part.file) {
+          chunks.push(chunk);
+        }
+        const buffer = Buffer.concat(chunks);
+
+        // Upload to S3 if available
+        if (request.server.uploadToS3) {
+          const uploadedUrl = await request.server.uploadToS3(buffer, filename, part.mimetype);
+          
+          // Categorize images based on field name
+          if (part.fieldname === 'beforeImages') {
+            beforeImages.push(uploadedUrl);
+          } else if (part.fieldname === 'afterImages') {
+            afterImages.push(uploadedUrl);
+          }
+        }
+      } else {
+        // Handle regular form fields
+        fields[part.fieldname] = part.value;
+      }
+    }
+
+    // Also check for images passed as arrays in the body (for non-multipart requests)
+    const bodyImages = {
+      beforeImages: fields.beforeImages ? JSON.parse(fields.beforeImages) : beforeImages,
+      afterImages: fields.afterImages ? JSON.parse(fields.afterImages) : afterImages
+    };
+
+    const status = fields.status;
+    const sr = await serviceRequestService.updateServiceRequestStatus(id, status, user, bodyImages);
     return reply.code(200).send({ message: 'Service request status updated', serviceRequest: sr });
   } catch (error) {
     handleError(error, request, reply);
