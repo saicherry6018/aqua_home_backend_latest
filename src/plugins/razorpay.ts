@@ -24,6 +24,7 @@ export default fp(async function (fastify: FastifyInstance) {
       key_id: keyId,
       key_secret: keySecret,
     });
+    
 
     // Decorate Fastify instance with razorpay
     fastify.decorate('razorpay', razorpay);

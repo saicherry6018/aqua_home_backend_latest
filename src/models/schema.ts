@@ -66,10 +66,10 @@ export const franchises = sqliteTable("franchises", {
 // FIXED: Typo in table name and column name, added missing fields
 export const installationRequests = sqliteTable('installation_requests', {
     id: text('id').primaryKey(),
+    name: text("name").notNull(),
     productId: text('product_id').notNull().references(() => products.id), // Fixed typo
     customerId: text('customer_id').notNull().references(() => users.id),
     orderType: text('order_type').notNull(), // 'RENTAL' | 'PURCHASE'
-    name: text("name").notNull(),
     phoneNumber: text('phone_number').notNull(),
     franchiseName: text('franchise_name').notNull(),
     franchiseId: text('franchise_id').notNull().references(() => franchises.id),
@@ -84,7 +84,7 @@ export const installationRequests = sqliteTable('installation_requests', {
     status: text('status', { enum: Object.values(InstallationRequestStatus) }).notNull().default(InstallationRequestStatus.SUBMITTED),
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`),
-    razorpayOrderId: text('razorpay_order_id'),
+    razorpayPaymentLink: text('razorpay_payment_link'),
     razorpaySubscriptionId: text('razorpay_subscription_id'),
     autoPaymentEnabled: boolean('auto_payment_enabled').default(false),
 });
