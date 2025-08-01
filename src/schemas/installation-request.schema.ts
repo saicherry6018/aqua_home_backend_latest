@@ -125,37 +125,6 @@ export const updateInstallationRequestStatusSchema = {
     }
 };
 
-// Complete Installation (Service Agent) - Creates subscription for rentals
-const completeInstallationBody = z.object({
-    depositPaid: z.number().positive(),
-    paymentMethod: z.enum(['CASH', 'UPI', 'RAZORPAY_MANUAL']),
-    receiptImage: z.string().url().optional(),
-    installationImages: z.array(z.string().url()).min(1).max(5),
-    customerSignature: z.string().url(), // Base64 or URL
-    notes: z.string().max(1000).optional()
-});
-
-export const completeInstallationSchema = {
-    params: zodToJsonSchema(z.object({ id: z.string() })),
-    body: zodToJsonSchema(completeInstallationBody),
-    response: {
-        200: zodToJsonSchema(z.object({
-            message: z.string(),
-            installationRequest: z.object({
-                id: z.string(),
-                status: z.string(),
-                completedDate: z.string(),
-                connectId: z.string().nullable()
-            }),
-            subscription: z.object({
-                id: z.string(),
-                connectId: z.string(),
-                razorpaySubscriptionId: z.string().nullable()
-            }).nullable()
-        }))
-    }
-};
-
 // Get Single Installation Request
 export const getInstallationRequestSchema = {
     params: zodToJsonSchema(z.object({ id: z.string() })),

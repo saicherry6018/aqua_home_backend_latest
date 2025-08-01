@@ -60,28 +60,4 @@ export default async function (fastify: FastifyInstance) {
 
     );
 
-    // Mark installation as complete (moves to payment pending)
-    fastify.put('/:id/mark-complete', {
-        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
-    }, (req, res) => markInstallationComplete(req as any, res));
-
-    // Generate payment link for installation
-    fastify.post('/:id/generate-payment', {
-        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
-    }, (req, res) => generatePaymentLink(req as any, res));
-
-    // Verify payment and complete installation
-    fastify.put('/:id/verify-payment', {
-        preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.ADMIN, UserRole.FRANCHISE_OWNER])]
-    }, (req, res) => verifyPaymentAndComplete(req as any, res));
-
-    // Refresh payment status
-    fastify.post(
-        '/:id/refresh-payment',
-        {
-            preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])]
-        },
-        (req, res) => refreshPaymentStatus(req as any, res)
-
-    );
 }

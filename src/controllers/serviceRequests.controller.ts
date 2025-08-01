@@ -217,6 +217,10 @@ export async function generateInstallationPaymentLink(
       throw forbidden('This endpoint is only for installation service requests');
     }
 
+    if (serviceRequest.status !== 'PAYMENT_PENDING') {
+      throw badRequest('Service request must be in PAYMENT_PENDING status to generate payment link');
+    }
+
     // Check if user has permission (assigned agent, franchise owner, or admin)
     if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
       throw forbidden('You can only generate payment links for your assigned requests');
@@ -248,6 +252,10 @@ export async function refreshInstallationPaymentStatus(
       throw forbidden('This endpoint is only for installation service requests');
     }
 
+    if (serviceRequest.status !== 'PAYMENT_PENDING') {
+      throw badRequest('Service request must be in PAYMENT_PENDING status to refresh payment');
+    }
+
     // Check if user has permission
     if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
       throw forbidden('You can only check payment status for your assigned requests');
@@ -258,19 +266,27 @@ export async function refreshInstallationPaymentStatus(
       request.user
     );
 
+    // If payment is completed, update service request status
+    if (result.paymentStatus === 'COMPLETED') {
+      await serviceRequestService.updateServiceRequestStatus(
+        request.params.id,
+        'COMPLETED' as any,
+        request.user
+      );
+    }
+
     return reply.code(200).send(result);
   } catch (error) {
     handleError(error, request, reply);
   }
 }
 
-export async function uploadPaymentProof(
+export async function verifyInstallationPayment(
   request: FastifyRequest<{
     Params: { id: string };
     Body: {
       paymentMethod: 'CASH' | 'UPI';
       paymentImage: string;
-      amount: number;
       notes?: string;
     }
   }>,
@@ -287,6 +303,10 @@ export async function uploadPaymentProof(
       throw forbidden('This endpoint is only for installation service requests');
     }
 
+    if (serviceRequest.status !== 'PAYMENT_PENDING') {
+      throw badRequest('Service request must be in PAYMENT_PENDING status to verify payment');
+    }
+
     // Check if user has permission
     if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
       throw forbidden('You can only upload payment proof for your assigned requests');
@@ -298,6 +318,13 @@ export async function uploadPaymentProof(
         paymentMethod: request.body.paymentMethod,
         paymentImage: request.body.paymentImage
       },
+      request.user
+    );
+
+    // Update service request status to completed
+    await serviceRequestService.updateServiceRequestStatus(
+      request.params.id,
+      'COMPLETED' as any,
       request.user
     );
 
