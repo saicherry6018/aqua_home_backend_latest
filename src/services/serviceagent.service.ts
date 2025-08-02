@@ -30,7 +30,7 @@ export const serviceAgentAddToDB = async (data: ServiceAgentInput) => {
         throw new Error('Service agent with this phone number already exists');
     }
 
-    const agentId = await generateId('agent');
+    const agentId = uuidv4();
 
     // Create the user record
     await db.insert(users).values({
@@ -58,7 +58,6 @@ export const serviceAgentAddToDB = async (data: ServiceAgentInput) => {
         phone: data.number
     };
 };
-
 export const getAllServiceAgentsFromDB = async (filters?: {
     id?: string;
     franchiseId?: string;
@@ -69,10 +68,6 @@ export const getAllServiceAgentsFromDB = async (filters?: {
 
     let whereConditions = [eq(users.role, UserRole.SERVICE_AGENT)];
 
-    if (filters?.id) {
-        whereConditions.push(eq(users.id, filters.id));
-    }
-
     if (filters?.city) {
         whereConditions.push(eq(users.city, filters.city));
     }
@@ -81,8 +76,24 @@ export const getAllServiceAgentsFromDB = async (filters?: {
         whereConditions.push(eq(users.isActive, filters.isActive));
     }
 
-    // Base query with franchise information through mapping table
-    let query = db
+    // Additional conditions for the franchise join
+    let franchiseJoinConditions = [
+        eq(franchiseAgents.agentId, users.id),
+        eq(franchiseAgents.isActive, true)
+    ];
+
+    // If filtering by specific agent id, add to franchise join conditions
+    if (filters?.id) {
+        franchiseJoinConditions.push(eq(franchiseAgents.agentId, filters.id));
+    }
+
+    // If filtering by franchiseId, add to franchise join conditions
+    if (filters?.franchiseId) {
+        franchiseJoinConditions.push(eq(franchiseAgents.franchiseId, filters.franchiseId));
+    }
+
+    // Build the query
+    const query = db
         .select({
             id: users.id,
             name: users.name,
@@ -95,25 +106,23 @@ export const getAllServiceAgentsFromDB = async (filters?: {
             installationRequestsCount: sql<number>`COUNT(DISTINCT ${installationRequests.id})`,
             active: users.isActive,
             joined: users.createdAt,
+            agentId:franchiseAgents.agentId
         })
         .from(users)
-        .leftJoin(franchiseAgents, and(
-            eq(franchiseAgents.agentId, users.id),
-            eq(franchiseAgents.isActive, true)
-        ))
+        .leftJoin(franchiseAgents, and(...franchiseJoinConditions))
         .leftJoin(franchises, eq(franchiseAgents.franchiseId, franchises.id))
         .leftJoin(serviceRequests, eq(serviceRequests.assignedToId, users.id))
         .leftJoin(installationRequests, eq(installationRequests.assignedTechnicianId, users.id))
-        .where(and(...whereConditions));
+        .where(and(...whereConditions))
+        .groupBy(users.id, franchises.id);
 
-    // If filtering by franchiseId, add that condition
-    if (filters?.franchiseId) {
-        query = query.where(and(...whereConditions, eq(franchiseAgents.franchiseId, filters.franchiseId)));
-    }
-
-    const agents = await query.groupBy(users.id, franchises.id);
+    const agents = await query;
 
     console.log('Service agents retrieved:', agents);
+
+    if(filters?.id){
+        return agents.filter(agent=>agent.agentId===filters?.id)
+    }
     return agents;
 };
 
