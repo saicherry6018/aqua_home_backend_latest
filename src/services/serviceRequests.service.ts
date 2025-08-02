@@ -410,22 +410,32 @@ export async function updateServiceRequestStatus(
   // Validate status transitions and required data
   const currentStatus = serviceRequest.status as ServiceRequestStatus;
 
-  // Status transition validations
+  // Define valid status transitions
+  const validTransitions: Record<ServiceRequestStatus, ServiceRequestStatus[]> = {
+    [ServiceRequestStatus.CREATED]: [ServiceRequestStatus.ASSIGNED, ServiceRequestStatus.CANCELLED],
+    [ServiceRequestStatus.ASSIGNED]: [ServiceRequestStatus.SCHEDULED, ServiceRequestStatus.CANCELLED],
+    [ServiceRequestStatus.SCHEDULED]: [ServiceRequestStatus.IN_PROGRESS, ServiceRequestStatus.CANCELLED],
+    [ServiceRequestStatus.IN_PROGRESS]: [ServiceRequestStatus.PAYMENT_PENDING, ServiceRequestStatus.COMPLETED, ServiceRequestStatus.CANCELLED],
+    [ServiceRequestStatus.PAYMENT_PENDING]: [ServiceRequestStatus.COMPLETED, ServiceRequestStatus.CANCELLED],
+    [ServiceRequestStatus.COMPLETED]: [], // Cannot transition from completed
+    [ServiceRequestStatus.CANCELLED]: [ServiceRequestStatus.ASSIGNED, ServiceRequestStatus.SCHEDULED] // Can be reactivated
+  };
+
+  // Check if the status transition is valid
+  if (!validTransitions[currentStatus]?.includes(status)) {
+    throw badRequest(`Invalid status transition from ${currentStatus} to ${status}. Valid transitions are: ${validTransitions[currentStatus]?.join(', ') || 'none'}`);
+  }
+
+  // Status-specific validations
   switch (status) {
     case ServiceRequestStatus.ASSIGNED:
-      if (currentStatus !== ServiceRequestStatus.CREATED) {
-        throw badRequest('Can only assign service requests that are in CREATED status');
-      }
       if (!data?.agentId) {
         throw badRequest('Agent ID is required for assignment');
       }
       break;
 
     case ServiceRequestStatus.SCHEDULED:
-      if (currentStatus !== ServiceRequestStatus.ASSIGNED) {
-        throw badRequest('Can only schedule service requests that are ASSIGNED. Agent must be assigned first.');
-      }
-      if (!serviceRequest.assignedAgentId) {
+      if (!serviceRequest.assignedToId) {
         throw badRequest('Cannot schedule without assigned agent');
       }
       if (!data?.scheduledDate) {
@@ -434,9 +444,6 @@ export async function updateServiceRequestStatus(
       break;
 
     case ServiceRequestStatus.IN_PROGRESS:
-      if (currentStatus !== ServiceRequestStatus.SCHEDULED) {
-        throw badRequest('Can only start service requests that are SCHEDULED');
-      }
       // For installation type, require before images
       if (serviceRequest.type === 'installation' && (!data?.images || data.images.length === 0)) {
         throw badRequest('Before images are required to start installation service requests');
@@ -444,8 +451,8 @@ export async function updateServiceRequestStatus(
       break;
 
     case ServiceRequestStatus.PAYMENT_PENDING:
-      if (currentStatus !== ServiceRequestStatus.IN_PROGRESS) {
-        throw badRequest('Can only move to payment pending from IN_PROGRESS status');
+      if (!serviceRequest.requiresPayment) {
+        throw badRequest('This service request does not require payment');
       }
       if (!data?.paymentAmount || data.paymentAmount <= 0) {
         throw badRequest('Payment amount is required');
@@ -457,19 +464,13 @@ export async function updateServiceRequestStatus(
       break;
 
     case ServiceRequestStatus.COMPLETED:
-      if (currentStatus !== ServiceRequestStatus.IN_PROGRESS && currentStatus !== ServiceRequestStatus.PAYMENT_PENDING) {
-        throw badRequest('Can only complete service requests from IN_PROGRESS or PAYMENT_PENDING status');
-      }
       // Require completion images
       if (!data?.images || data.images.length === 0) {
         throw badRequest('Completion images are required to mark as completed');
       }
-      break;
-
-    case ServiceRequestStatus.CANCELLED:
-      // Can be cancelled from most statuses except completed
-      if (currentStatus === ServiceRequestStatus.COMPLETED) {
-        throw badRequest('Cannot cancel completed service requests');
+      // If it requires payment and coming from IN_PROGRESS, must go through PAYMENT_PENDING first
+      if (serviceRequest.requiresPayment && currentStatus === ServiceRequestStatus.IN_PROGRESS) {
+        throw badRequest('Service requests requiring payment must go through PAYMENT_PENDING status first');
       }
       break;
   }
