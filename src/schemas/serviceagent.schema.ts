@@ -137,6 +137,7 @@ export const getFranchiseAgentsSchema = {
     security: [{ bearerAuth: [] }],
 };
 export const addServiceAgentSchema = {
+    
     body: zodToJsonSchema(
         serviceAgentAddBody
     ),

@@ -25,6 +25,7 @@ import franchiseRoutes from './routes/franchise.route';
 // import notificationRoutes from './routes/notification';
 // import dashboardRoutes from './routes/dashboard';
 import serviceAgentRoutes from './routes/serviceagent.route';
+import subscriptions from './routes/subscriptions.routes';
 // import homescreenRoutes from './routes/homescreen';
 import multipart, { ajvFilePlugin } from '@fastify/multipart';
 import categoryRoute from './routes/category.route';
@@ -127,6 +128,7 @@ app.register(franchiseRoutes, { prefix: '/api/franchises' });
 // app.register(dashboardRoutes, { prefix: '/api/dashboard' });
 app.register(serviceAgentRoutes, { prefix: '/api/agents' });
 app.register(installationRequestRoutes, { prefix: '/api/installation-requests' });
+app.register(subscriptions, { prefix: '/api/subscriptions' });
 // app.register(homescreenRoutes, { prefix: '/api/homescreen' });
 
 // Add health check route

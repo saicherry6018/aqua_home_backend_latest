@@ -383,7 +383,7 @@ export async function updateFranchiseArea(id: string, data: any) {
                 });
                 updateData.ownerId = ownerId
                 updateData.isCompanyManaged = false
-            }else{
+            } else {
                 updateData.isCompanyManaged = true
             }
         }
@@ -472,11 +472,29 @@ export async function assignServiceAgent(id: string, agentId: string, user: any)
  * @param id Franchise area ID
  * @returns Array of service agents
  */
-export async function getServiceAgents(id: string) {
+export async function getServiceAgents(franchiseId: string) {
     const fastify = getFastifyInstance();
-    const agents = await fastify.db.query.users.findMany({
-        where: and(eq(users.franchiseAreaId, id), eq(users.role, UserRole.SERVICE_AGENT)),
+    const db = fastify.db;
+
+    // Get agents assigned to the franchise through the franchiseAgents mapping table
+    const agentAssignments = await db.query.franchiseAgents.findMany({
+        where: and(
+            eq(franchiseAgents.franchiseId, franchiseId),
+            eq(franchiseAgents.isActive, true)
+        ),
+        with: {
+            agent: true // This will include the full user data for each agent
+        }
     });
+
+    // Extract the agent data and filter by role (additional safety check)
+    const agents = agentAssignments
+        .map(assignment => assignment.agent)
+        .filter(agent =>
+            agent.role === UserRole.SERVICE_AGENT &&
+            agent.isActive === true
+        );
+
     return agents;
 }
 

@@ -1,7 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
 import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments } from '../models/schema';
-import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus } from '../types';
+import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus, PaymentStatus } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
 import { getFastifyInstance } from '../shared/fastify-instance';
@@ -284,56 +284,69 @@ export async function createInstallationServiceRequest(data: {
     )
   });
   if (existingServiceRequest) {
-    throw badRequest('Installation service request already exists for this installation request');
-  }
-
-  // Check permissions
-  if (user.role === UserRole.FRANCHISE_OWNER) {
-    const franchise = await getFranchiseById(installationRequest.franchiseId);
-    if (!franchise || franchise.ownerId !== user.userId) {
-      throw forbidden('Installation request is not in your franchise area');
+    await fastify.db.update(serviceRequests).set({
+      status: ServiceRequestStatus.SCHEDULED,
+      assignedToId: data.assignedToId
+    }).where(
+      eq(serviceRequests.id, existingServiceRequest.id)
+    )
+    await fastify.db.update(installationRequests).set({
+      status: InstallationRequestStatus.INSTALLATION_SCHEDULED
+    }).where(
+      eq(installationRequests.id, installationRequest.id)
+    )
+  } else {
+    // Check permissions
+    if (user.role === UserRole.FRANCHISE_OWNER) {
+      const franchise = await getFranchiseById(installationRequest.franchiseId);
+      if (!franchise || franchise.ownerId !== user.userId) {
+        throw forbidden('Installation request is not in your franchise area');
+      }
     }
-  }
 
-  // Validate assigned agent if provided
-  if (data.assignedToId) {
-    const agent = await fastify.db.query.users.findFirst({
-      where: eq(users.id, data.assignedToId)
-    });
-    if (!agent || agent.role !== UserRole.SERVICE_AGENT) {
-      throw badRequest('Invalid service agent');
+    // Validate assigned agent if provided
+    if (data.assignedToId) {
+      const agent = await fastify.db.query.users.findFirst({
+        where: eq(users.id, data.assignedToId)
+      });
+      if (!agent || agent.role !== UserRole.SERVICE_AGENT) {
+        throw badRequest('Invalid service agent');
+      }
+      // For franchise owners, ensure agent is in same franchise (you might need to add franchise checking)
     }
-    // For franchise owners, ensure agent is in same franchise (you might need to add franchise checking)
+
+    const serviceRequest = {
+      id,
+      subscriptionId: null,
+      customerId: installationRequest.customerId,
+      productId: installationRequest.productId,
+      installationRequestId: data.installationRequestId,
+      type: ServiceRequestType.INSTALLATION,
+      description: data.description,
+      images: null,
+      status: data.assignedToId ? ServiceRequestStatus.SCHEDULED : ServiceRequestStatus.CREATED,
+      assignedToId: data.assignedToId || null,
+      franchiseId: installationRequest.franchiseId,
+      scheduledDate: data.scheduledDate || null,
+      completedDate: null,
+      beforeImages: null,
+      afterImages: null,
+      requiresPayment: true,
+      paymentAmount: null,
+      createdAt: now,
+      updatedAt: now,
+      requirePayment: true
+    };
+
+    await fastify.db.insert(serviceRequests).values(serviceRequest);
+
+    await fastify.db.update(installationRequests).set({
+      status: InstallationRequestStatus.INSTALLATION_SCHEDULED,
+      assignedTechnicianId: data.assignedToId
+    }).where(eq(installationRequests.id, installationRequest.id))
   }
 
-  const serviceRequest = {
-    id,
-    subscriptionId: null,
-    customerId: installationRequest.customerId,
-    productId: installationRequest.productId,
-    installationRequestId: data.installationRequestId,
-    type: ServiceRequestType.INSTALLATION,
-    description: data.description,
-    images: null,
-    status: data.assignedToId ? ServiceRequestStatus.ASSIGNED : ServiceRequestStatus.CREATED,
-    assignedToId: data.assignedToId || null,
-    franchiseId: installationRequest.franchiseId,
-    scheduledDate: data.scheduledDate || null,
-    completedDate: null,
-    beforeImages: null,
-    afterImages: null,
-    requiresPayment: true,
-    paymentAmount: null,
-    createdAt: now,
-    updatedAt: now,
-  };
 
-  await fastify.db.insert(serviceRequests).values(serviceRequest);
-
-  await fastify.db.update(installationRequests).set({
-    status: InstallationRequestStatus.INSTALLATION_SCHEDULED,
-    assignedTechnicianId: data.assignedToId
-  }).where(eq(installationRequests.id, installationRequest.id))
 
   // Log action history for installation request status update
   await logActionHistory({
@@ -348,27 +361,27 @@ export async function createInstallationServiceRequest(data: {
   })
 
   // Log action history
-  await logActionHistory(createServiceRequestStatusAction(
-    id,
-    undefined,
-    serviceRequest.status,
-    user.userId,
-    user.role,
-    { installationRequestId: data.installationRequestId, assignedToId: data.assignedToId }
-  ));
+  // await logActionHistory(createServiceRequestStatusAction(
+  //   id,
+  //   undefined,
+  //   data.assignedToId ? ServiceRequestStatus.SCHEDULED : ServiceRequestStatus.CREATED,
+  //   user.userId,
+  //   user.role,
+  //   { installationRequestId: data.installationRequestId, assignedToId: data.assignedToId }
+  // ));
 
-  if (data.assignedToId) {
-    await logActionHistory({
-      serviceRequestId: id,
-      actionType: ActionType.SERVICE_REQUEST_ASSIGNED,
-      fromStatus: ServiceRequestStatus.CREATED,
-      toStatus: ServiceRequestStatus.ASSIGNED,
-      performedBy: user.userId,
-      performedByRole: user.role,
-      comment: `Service agent assigned during creation`,
-      metadata: { assignedToId: data.assignedToId }
-    });
-  }
+  // if (data.assignedToId) {
+  //   await logActionHistory({
+  //     serviceRequestId: id,
+  //     actionType: ActionType.SERVICE_REQUEST_ASSIGNED,
+  //     fromStatus: ServiceRequestStatus.CREATED,
+  //     toStatus: ServiceRequestStatus.ASSIGNED,
+  //     performedBy: user.userId,
+  //     performedByRole: user.role,
+  //     comment: `Service agent assigned during creation`,
+  //     metadata: { assignedToId: data.assignedToId }
+  //   });
+  // }
 
   // TODO: Send notification to customer and assigned agent (if any)
 
@@ -409,6 +422,7 @@ export async function updateServiceRequestStatus(id: string, status: ServiceRequ
     updateData.completedDate = new Date().toISOString();
   }
 
+  console.log('images before iamges ', images?.beforeImages)
   // Handle before/after images
   if (images?.beforeImages) {
     updateData.beforeImages = JSON.stringify(images.beforeImages);
@@ -451,7 +465,9 @@ async function validateServiceRequestTransition(
 
   // Validation for SCHEDULED -> IN_PROGRESS transition (requires before images for non-installation types)
   if (currentStatus === ServiceRequestStatus.SCHEDULED && newStatus === ServiceRequestStatus.IN_PROGRESS) {
+    console.log('came here ', sr)
     if (sr.type !== ServiceRequestType.INSTALLATION) {
+      console.log('camer here beforeImages ', images.beforeImages)
       if (!images?.beforeImages || images.beforeImages.length === 0) {
         throw badRequest('Before images are required when starting service work');
       }
@@ -460,7 +476,7 @@ async function validateServiceRequestTransition(
 
   // Validation for IN_PROGRESS -> PAYMENT_PENDING transition
   if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.PAYMENT_PENDING) {
-    if (!sr.requiresPayment) {
+    if (!sr.requirePayment) {
       throw badRequest('This service request does not require payment');
     }
 
@@ -472,7 +488,7 @@ async function validateServiceRequestTransition(
 
   // Validation for IN_PROGRESS -> COMPLETED transition (for non-payment services)
   if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.COMPLETED) {
-    if (sr.requiresPayment) {
+    if (sr.requirePayment) {
       throw badRequest('Service requests requiring payment must go through PAYMENT_PENDING status first');
     }
 
@@ -501,6 +517,7 @@ async function validateInstallationSpecificTransitions(
   newStatus: ServiceRequestStatus,
   images?: { beforeImages?: string[]; afterImages?: string[] }
 ) {
+  const fastify = getFastifyInstance();
   // Installation requests always require payment, so enforce payment flow
   if (currentStatus === ServiceRequestStatus.IN_PROGRESS && newStatus === ServiceRequestStatus.COMPLETED) {
     throw badRequest('Installation service requests must go through PAYMENT_PENDING status before completion');
@@ -516,6 +533,16 @@ async function validateInstallationSpecificTransitions(
   // Installation can only be completed after payment verification
   if (currentStatus === ServiceRequestStatus.PAYMENT_PENDING && newStatus === ServiceRequestStatus.COMPLETED) {
     // Additional payment verification logic can be added here if needed
+    const installationPayment = await fastify.db.query.payments.findFirst({
+      where: and(eq(payments.installationRequestId, sr.installationRequestId), eq(payments.status, PaymentStatus.COMPLETED))
+
+    });
+
+    if (!installationPayment) {
+      throw badRequest('please complete payment first')
+
+    }
+
   }
 }
 
@@ -559,6 +586,19 @@ async function syncInstallationRequestStatus(
       installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
       break;
   }
+  await fastify.db.update(installationRequests).set({
+    status: installationStatus
+  }).where(eq(installationRequests.id, installationRequestId))
+
+  await logActionHistory({
+    installationRequestId: installationRequestId,
+    actionType: installationActionType,
+    fromStatus: serviceRequestStatus,
+    toStatus: ServiceRequestStatus.ASSIGNED,
+    performedBy: user.userId,
+    performedByRole: user.role,
+    comment: `Service agent ${user.name || user.phone} assigned`
+  })
 }
 
 export async function assignServiceAgent(id: string, assignedToId: string, user: any) {

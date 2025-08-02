@@ -2,7 +2,7 @@ import { FastifyRequest, FastifyReply } from "fastify";
 import * as serviceRequestService from '../services/serviceRequests.service';
 import * as installationRequestService from '../services/installation-request.service';
 import { handleError, forbidden, notFound, badRequest } from "../utils/errors";
-import { ServiceRequestStatus, UserRole } from '../types';
+import { ServiceRequestStatus, ServiceRequestType, UserRole } from '../types';
 
 // Get all service requests
 export async function getAllServiceRequests(
@@ -253,7 +253,7 @@ export async function generateInstallationPaymentLink(
       throw notFound('Service request');
     }
 
-    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
+    if (serviceRequest.type !== ServiceRequestType.INSTALLATION || !serviceRequest.installationRequestId) {
       throw forbidden('This endpoint is only for installation service requests');
     }
 
@@ -288,7 +288,7 @@ export async function refreshInstallationPaymentStatus(
       throw notFound('Service request');
     }
 
-    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
+    if (serviceRequest.type !== ServiceRequestType.INSTALLATION || !serviceRequest.installationRequestId) {
       throw forbidden('This endpoint is only for installation service requests');
     }
 

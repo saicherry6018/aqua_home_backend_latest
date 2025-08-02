@@ -249,7 +249,8 @@ export async function checkSubscriptionByConnectId(connectId: string, customerPh
       customer: true,
       product: true,
       franchise: true,
-      installationRequest: true,
+      serviceRequests:true
+
     },
   });
 

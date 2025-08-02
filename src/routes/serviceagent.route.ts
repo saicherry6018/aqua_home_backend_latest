@@ -33,7 +33,9 @@ export default async function (fastify: FastifyInstance) {
         await updateFranchiseAssignmentController(request, reply));
 
     // Get all franchises for an agent
-    fastify.get("/agent/:agentId/franchises", { schema: getAgentFranchisesSchema }, async (request, reply) =>
+    fastify.get("/agent/:agentId/franchises",
+         { schema: getAgentFranchisesSchema },
+          async (request, reply) =>
         await getAgentFranchisesController(request, reply));
 
     // Get all agents for a franchise

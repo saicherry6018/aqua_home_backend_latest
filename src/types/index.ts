@@ -5,7 +5,7 @@ export enum UserRole {
     SERVICE_AGENT = 'service_agent',
 }
 export enum RentalStatus {
-    ACTIVE = 'active',
+    ACTIVE = 'ACTIVE',
     PAUSED = 'paused',
     TERMINATED = 'terminated',
     EXPIRED = 'expired',

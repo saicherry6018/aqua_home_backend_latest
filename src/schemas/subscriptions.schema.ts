@@ -29,6 +29,7 @@ export const ProductInSubscriptionSchema = z.object({
   isRentable: z.boolean(),
   isPurchasable: z.boolean(),
   isActive: z.boolean(),
+  categoryId:z.string()
 });
 
 // Installation Request Schema for subscription relationships

@@ -57,6 +57,7 @@ export async function checkSubscription(
     console.log('Checking subscription for connect ID:', connectId);
 
     const result = await subscriptionService.checkSubscriptionByConnectId(connectId, customerPhone);
+    console.log('result ',result)
     return reply.code(200).send(result);
   } catch (error) {
     console.error('Error checking subscription:', error);

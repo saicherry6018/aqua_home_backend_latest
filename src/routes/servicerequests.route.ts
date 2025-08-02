@@ -37,7 +37,7 @@ export default async function (fastify: FastifyInstance) {
   fastify.get(
     '/:id',
     {
-      schema: getServiceRequestByIdSchema,
+      // schema: getServiceRequestByIdSchema,
       preHandler: [fastify.authenticate],
     },
     (request, reply) => getServiceRequestById(request as any, reply as any)
@@ -109,8 +109,9 @@ export default async function (fastify: FastifyInstance) {
   fastify.patch(
     '/:id/status',
     {
-      schema: updateServiceRequestStatusSchema,
+      // schema: updateServiceRequestStatusSchema,
       preHandler: [fastify.authenticate],
+      validatorCompiler: () => () => true
     },
     (request, reply) => updateServiceRequestStatus(request as any, reply as any)
   );

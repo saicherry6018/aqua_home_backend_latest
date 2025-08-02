@@ -110,7 +110,7 @@ export const getFranchiseAgentsController = async (request: FastifyRequest, repl
     try {
         const { franchiseId } = request.params as { franchiseId: string };
         const agents = await getFranchiseAgents(franchiseId);
-
+        console.log('avilable agents are ',agents)
         return reply.code(200).send(agents);
     } catch (error) {
         return handleError(error, request, reply);

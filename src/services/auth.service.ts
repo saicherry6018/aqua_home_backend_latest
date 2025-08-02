@@ -44,6 +44,7 @@ export async function loginWithFirebase(fastify: any, idToken: string, role: Use
                     createdAt: now.toISOString(),
                     updatedAt: now.toISOString(),
                     isActive: true,
+                    
                 });
                 user = await db.query.users.findFirst({ where: eq(users.id, userId) });
             }

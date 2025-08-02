@@ -8,7 +8,8 @@ import {
     subscriptions,
     payments,
     actionHistory,
-    serviceRequests
+    serviceRequests,
+    franchiseAgents
 } from '../models/schema';
 import {
     InstallationRequestStatus,
@@ -16,7 +17,8 @@ import {
     ActionType,
     PaymentType,
     PaymentStatus,
-    ServiceRequestType
+    ServiceRequestType,
+    ServiceRequestStatus
 } from '../types';
 import { badRequest, forbidden, notFound } from '../utils/errors';
 import Razorpay from 'razorpay';
@@ -197,24 +199,77 @@ export async function getInstallationRequests(
     };
 }
 
-
 export async function getInstallationRequestById(
     requestId: string,
     user: { userId: string; role: UserRole }
 ) {
     const fastify = getFastifyInstance();
     const db = fastify.db;
+
     const request = await db.query.installationRequests.findFirst({
         where: eq(installationRequests.id, requestId),
-        with: { product: true, customer: true, franchise: true }
+        with: {
+            product: true,
+            customer: true,
+            franchise: true,
+            assignedTechnician: true
+        }
     });
 
     if (!request) {
         throw notFound('Installation request');
     }
 
-    if (request.customerId !== user.userId && user.role !== UserRole.ADMIN) {
-        throw forbidden('You can only view your own requests');
+    // Access control based on user role
+    let hasAccess = false;
+
+    switch (user.role) {
+        case UserRole.ADMIN:
+            hasAccess = true;
+            break;
+
+        case UserRole.CUSTOMER:
+            // Customers can only view their own requests
+            hasAccess = request.customerId === user.userId;
+            break;
+
+        case UserRole.SERVICE_AGENT:
+            // Service agents can view if:
+            // 1. The request is assigned to them as technician
+            // 2. The request belongs to their franchise
+
+            if (request.assignedTechnicianId === user.userId) {
+                hasAccess = true;
+            } else {
+                // Check if the service agent is assigned to this franchise
+                const agentFranchiseAssignment = await db.query.franchiseAgents.findFirst({
+                    where: and(
+                        eq(franchiseAgents.agentId, user.userId),
+                        eq(franchiseAgents.franchiseId, request.franchiseId),
+                        eq(franchiseAgents.isActive, true)
+                    )
+                });
+                hasAccess = !!agentFranchiseAssignment;
+            }
+            break;
+
+        case UserRole.FRANCHISE_OWNER:
+            // Franchise owners can view requests in their franchise
+            const ownedFranchise = await db.query.franchises.findFirst({
+                where: and(
+                    eq(franchises.ownerId, user.userId),
+                    eq(franchises.id, request.franchiseId)
+                )
+            });
+            hasAccess = !!ownedFranchise;
+            break;
+
+        default:
+            hasAccess = false;
+    }
+
+    if (!hasAccess) {
+        throw forbidden('You do not have permission to view this installation request');
     }
 
     const returnValue = await db.query.installationRequests.findFirst({
@@ -224,7 +279,11 @@ export async function getInstallationRequestById(
             franchise: true,
             customer: true,
             assignedTechnician: true,
-            actionHistory: true
+            actionHistory: {
+                with: {
+                    performedByUser: true
+                }
+            }
         }
     });
 
@@ -240,7 +299,7 @@ export async function getInstallationRequestById(
             amount: request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice,
             method: payment?.paymentMethod,
             paidDate: payment?.paidDate,
-            razorpayOrderId: request.razorpayOrderId
+            razorpayOrderId: request.razorpayPaymentLink // Fixed: should be razorpayPaymentLink based on schema
         };
     }
 
@@ -321,8 +380,20 @@ export async function updateInstallationRequestStatus(
         updateData.assignedTechnicianId = data.assignedTechnicianId;
         updateData.scheduledDate = data.scheduledDate;
 
+        const serviceRequest = await fastify.db.query.servicerequests.findFirst({
+            where: eq(serviceRequests.installationRequestId, requestId)
+        })
+
+        if (serviceRequest) {
+            await db.update(serviceRequests).set({
+                status: ServiceRequestStatus.SCHEDULED,
+                assignedToId: data.assignedTechnicianId
+            })
+        } else {
+            await createInstallationServiceRequest(requestId, data.assignedTechnicianId, data.scheduledDate, user);
+        }
         // Create service request for installation
-        await createInstallationServiceRequest(requestId, data.assignedTechnicianId, data.scheduledDate, user);
+
     }
 
     if (data.status === InstallationRequestStatus.REJECTED && data.rejectionReason) {
@@ -334,6 +405,24 @@ export async function updateInstallationRequestStatus(
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
         .where(eq(installationRequests.id, requestId)).returning();
+
+    const serviceRequest = await fastify.db.query.servicerequests.findFirst({
+        where: eq(serviceRequests.installationRequestId, requestId)
+    })
+
+    if (serviceRequest) {
+        await db.update(serviceRequests).set({
+            status:
+                data.status === InstallationRequestStatus.CANCELLED
+                    ? ServiceRequestStatus.CANCELLED
+                    : data.status === InstallationRequestStatus.INSTALLATION_SCHEDULED
+                        ? ServiceRequestStatus.SCHEDULED
+                        : data.status === InstallationRequestStatus.REJECTED
+                            ? ServiceRequestStatus.CANCELLED
+                            : serviceRequest.status // keep existing status if none match
+        });
+    }
+
 
     // Log action history
     await logActionHistory({
@@ -366,7 +455,7 @@ async function createInstallationServiceRequest(
 ) {
     const fastify = getFastifyInstance();
     const db = fastify.db;
-    
+
     // Check if service request already exists
     const existingServiceRequest = await db.query.serviceRequests.findFirst({
         where: and(
@@ -421,10 +510,10 @@ async function createInstallationServiceRequest(
                 performedBy: user.userId,
                 performedByRole: user.role,
                 comment: 'Installation service request created and scheduled',
-                metadata: JSON.stringify({ 
-                    installationRequestId, 
-                    assignedTechnicianId, 
-                    scheduledDate 
+                metadata: JSON.stringify({
+                    installationRequestId,
+                    assignedTechnicianId,
+                    scheduledDate
                 })
             });
         }
@@ -781,7 +870,7 @@ export async function refreshPaymentStatus(
     if (!request) {
         throw notFound('Installation request');
     }
-
+    console.log('request ', request)
     if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
         throw badRequest('Installation must be in payment pending state');
     }
@@ -803,6 +892,8 @@ export async function refreshPaymentStatus(
                     count: 1
                 });
 
+                console.log(' invoices ', invoices)
+
                 if (invoices.items.length > 0 && invoices.items[0].status === 'paid') {
                     successfulPayment = {
                         id: invoices.items[0].payment_id,
@@ -815,6 +906,8 @@ export async function refreshPaymentStatus(
 
 
         if (successfulPayment) {
+
+            console.log('successfulPayment ', successfulPayment)
             // Payment found, complete the installation
             await completeInstallationWithPayment(requestId, {
                 razorpayPaymentId: successfulPayment.id,
@@ -839,7 +932,7 @@ export async function refreshPaymentStatus(
             };
         }
     } catch (error) {
-        console.error('Error checking payment status:', error);
+        console.log('Error checking payment status:', error);
         throw badRequest('Failed to check payment status');
     }
 }
@@ -1173,7 +1266,8 @@ async function completeInstallationWithPayment(
             depositPaymentMethod: paymentDetails.method,
             depositReceiptImage: paymentDetails.paymentImage
         },
-        request.orderType === 'PURCHASE' ? requestId : undefined
+        requestId
+
     );
 
     // Update installation request to completed

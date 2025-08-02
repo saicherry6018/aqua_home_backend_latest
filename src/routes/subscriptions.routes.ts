@@ -36,7 +36,7 @@ export default async function (fastify: FastifyInstance) {
   fastify.post(
     '/check',
     {
-      schema: checkSubscriptionSchema,
+      // schema: checkSubscriptionSchema,
     },
     (request, reply) => checkSubscription(request as any, reply as any)
   );

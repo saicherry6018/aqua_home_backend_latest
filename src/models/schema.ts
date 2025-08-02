@@ -2,6 +2,7 @@ import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core
 import { InstallationRequestStatus, RentalStatus, ServiceRequestStatus, ServiceRequestType, UserRole, PaymentStatus, PaymentType, ActionType } from "../types";
 import { InferSelectModel, relations, sql } from "drizzle-orm";
 import { boolean } from "drizzle-orm/mysql-core";
+import { number } from "zod";
 
 export const users = sqliteTable(
     "users",
@@ -127,6 +128,7 @@ export const serviceRequests = sqliteTable("service_requests", {
     franchiseId: text("franchise_id").notNull().references(() => franchises.id),
     scheduledDate: text("scheduled_date"),
     completedDate: text("completed_date"),
+    requirePayment : integer('require_payment',{mode:'boolean'}).notNull().default(false),
     beforeImages: text("before_images"), // JSON array - agent uploads before service
     afterImages: text("after_images"), // JSON array - agent uploads after service
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

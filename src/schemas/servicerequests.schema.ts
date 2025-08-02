@@ -40,13 +40,17 @@ export const ServiceRequestSchema = z.object({
   description: z.string(),
   images: z.array(z.string()).optional().default([]), // Images as array of strings
   status: z.enum(Object.values(ServiceRequestStatus) as [ServiceRequestStatus, ...ServiceRequestStatus[]]),
-  assignedToId: z.string().optional().nullable(),
+  assignedAgent: z.object({
+    name:z.string(),
+    id:z.string(),
+    phone:z.string()
+  }).optional(),
   franchiseId: z.string(),
   scheduledDate: z.string().optional().nullable(),
   completedDate: z.string().optional().nullable(),
   beforeImages: z.array(z.string()).optional().nullable(), // Agent uploads before service
   afterImages: z.array(z.string()).optional().nullable(), // Agent uploads after service
-  requiresPayment: z.boolean().optional().default(false),
+  requirePayment: z.boolean().optional().default(false),
   paymentAmount: z.number().optional().nullable(),
   razorpayOrderId: z.string().optional().nullable(),
   razorpaySubscriptionId: z.string().optional().nullable(),
@@ -154,6 +158,7 @@ export const UpdateServiceRequestStatusResponseSchema = z.object({
 });
 
 export const updateServiceRequestStatusSchema = {
+  consumes: ['multipart/form-data'],
   params: zodToJsonSchema(UpdateServiceRequestStatusParamsSchema),
   body: zodToJsonSchema(UpdateServiceRequestStatusBodySchema),
   response: {
