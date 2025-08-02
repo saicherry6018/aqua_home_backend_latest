@@ -77,6 +77,7 @@ export const LoginResponseSchema = z.object({
     accessToken: z.string(),
     refreshToken: z.string(),
     user: UserSchema,
+    franchiseId: z.string().nullable(),
 });
 
 

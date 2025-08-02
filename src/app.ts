@@ -29,6 +29,7 @@ import subscriptions from './routes/subscriptions.routes';
 // import homescreenRoutes from './routes/homescreen';
 import multipart, { ajvFilePlugin } from '@fastify/multipart';
 import categoryRoute from './routes/category.route';
+import paymentsRoutes from './routes/payments.route';
 
 // Load environment variables
 dotenv.config();
@@ -129,6 +130,7 @@ app.register(franchiseRoutes, { prefix: '/api/franchises' });
 app.register(serviceAgentRoutes, { prefix: '/api/agents' });
 app.register(installationRequestRoutes, { prefix: '/api/installation-requests' });
 app.register(subscriptions, { prefix: '/api/subscriptions' });
+app.register(paymentsRoutes, { prefix: '/api/payments' });
 // app.register(homescreenRoutes, { prefix: '/api/homescreen' });
 
 // Add health check route

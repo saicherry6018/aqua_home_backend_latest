@@ -64,10 +64,21 @@ export async function loginWithFirebase(fastify: any, idToken: string, role: Use
         }
         // Generate JWT tokens
         const tokens = await generateTokens(user);
+        
+        // If user is franchise owner, get their franchise area
+        let franchiseId = null;
+        if (user.role === UserRole.FRANCHISE_OWNER) {
+            const franchise = await db.query.franchises.findFirst({
+                where: eq(franchises.ownerId, user.id)
+            });
+            franchiseId = franchise?.id || null;
+        }
+        
         return {
             accessToken: tokens.accessToken,
             refreshToken: tokens.refreshToken,
             user,
+            franchiseId,
         };
     } catch (error) {
 
