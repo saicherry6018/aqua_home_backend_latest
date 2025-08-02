@@ -389,68 +389,140 @@ export async function createInstallationServiceRequest(data: {
 }
 
 // Update service request status
-export async function updateServiceRequestStatus(id: string, status: ServiceRequestStatus, user: any, images?: { beforeImages?: string[]; afterImages?: string[] }) {
+export async function updateServiceRequestStatus(
+  id: string, 
+  status: ServiceRequestStatus, 
+  user: any,
+  data?: { 
+    agentId?: string;
+    completedAt?: string;
+    scheduledDate?: string;
+    paymentAmount?: number;
+    images?: string[];
+  }
+) {
   const fastify = getFastifyInstance();
-  const sr = await getServiceRequestById(id);
-  if (!sr) throw notFound('Service Request');
+  const db = fastify.db;
 
-  // Permission: admin, franchise owner, or assigned agent
-  let hasPermission = false;
+  const serviceRequest = await getServiceRequestById(id);
+  if (!serviceRequest) throw notFound('Service Request');
 
-  if (user.role === UserRole.ADMIN) {
-    hasPermission = true;
-  } else if (user.role === UserRole.SERVICE_AGENT && sr.assignedToId === user.userId) {
-    hasPermission = true;
-  } else if (user.role === UserRole.FRANCHISE_OWNER) {
-    const franchise = await getFranchiseById(sr.franchiseId);
-    hasPermission = franchise && franchise.ownerId === user.userId;
+  // Validate status transitions and required data
+  const currentStatus = serviceRequest.status as ServiceRequestStatus;
+
+  // Status transition validations
+  switch (status) {
+    case ServiceRequestStatus.ASSIGNED:
+      if (currentStatus !== ServiceRequestStatus.CREATED) {
+        throw badRequest('Can only assign service requests that are in CREATED status');
+      }
+      if (!data?.agentId) {
+        throw badRequest('Agent ID is required for assignment');
+      }
+      break;
+
+    case ServiceRequestStatus.SCHEDULED:
+      if (currentStatus !== ServiceRequestStatus.ASSIGNED) {
+        throw badRequest('Can only schedule service requests that are ASSIGNED. Agent must be assigned first.');
+      }
+      if (!serviceRequest.assignedAgentId) {
+        throw badRequest('Cannot schedule without assigned agent');
+      }
+      if (!data?.scheduledDate) {
+        throw badRequest('Scheduled date is required');
+      }
+      break;
+
+    case ServiceRequestStatus.IN_PROGRESS:
+      if (currentStatus !== ServiceRequestStatus.SCHEDULED) {
+        throw badRequest('Can only start service requests that are SCHEDULED');
+      }
+      // For installation type, require before images
+      if (serviceRequest.type === 'installation' && (!data?.images || data.images.length === 0)) {
+        throw badRequest('Before images are required to start installation service requests');
+      }
+      break;
+
+    case ServiceRequestStatus.PAYMENT_PENDING:
+      if (currentStatus !== ServiceRequestStatus.IN_PROGRESS) {
+        throw badRequest('Can only move to payment pending from IN_PROGRESS status');
+      }
+      if (!data?.paymentAmount || data.paymentAmount <= 0) {
+        throw badRequest('Payment amount is required');
+      }
+      // Require completion images
+      if (!data?.images || data.images.length === 0) {
+        throw badRequest('Completion images are required before requesting payment');
+      }
+      break;
+
+    case ServiceRequestStatus.COMPLETED:
+      if (currentStatus !== ServiceRequestStatus.IN_PROGRESS && currentStatus !== ServiceRequestStatus.PAYMENT_PENDING) {
+        throw badRequest('Can only complete service requests from IN_PROGRESS or PAYMENT_PENDING status');
+      }
+      // Require completion images
+      if (!data?.images || data.images.length === 0) {
+        throw badRequest('Completion images are required to mark as completed');
+      }
+      break;
+
+    case ServiceRequestStatus.CANCELLED:
+      // Can be cancelled from most statuses except completed
+      if (currentStatus === ServiceRequestStatus.COMPLETED) {
+        throw badRequest('Cannot cancel completed service requests');
+      }
+      break;
   }
 
-  if (!hasPermission) throw forbidden('You do not have permission to update this service request');
-
-  // Validate status transitions and image requirements
-  await validateServiceRequestTransition(sr, status, images);
-
-  const oldStatus = sr.status;
   const updateData: any = {
     status,
     updatedAt: new Date().toISOString(),
   };
 
-  // Handle completion
-  if (status === ServiceRequestStatus.COMPLETED) {
-    updateData.completedDate = new Date().toISOString();
+  // Add specific data based on status
+  if (data?.agentId) updateData.assignedAgentId = data.agentId;
+  if (data?.scheduledDate) updateData.scheduledDate = data.scheduledDate;
+  if (data?.paymentAmount) updateData.paymentAmount = data.paymentAmount;
+  if (status === ServiceRequestStatus.COMPLETED) updateData.completedAt = new Date().toISOString();
+
+  // Handle images - store them properly as JSON strings
+  if (data?.images && data.images.length > 0) {
+    const imageField = status === ServiceRequestStatus.IN_PROGRESS ? 'beforeImages' : 'afterImages';
+    // Ensure images are stored as proper JSON string
+    updateData[imageField] = JSON.stringify(data.images);
   }
 
-  console.log('images before iamges ', images?.beforeImages)
-  // Handle before/after images
-  if (images?.beforeImages) {
-    updateData.beforeImages = JSON.stringify(images.beforeImages);
-  }
-  if (images?.afterImages) {
-    updateData.afterImages = JSON.stringify(images.afterImages);
-  }
+  await db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
 
-  await fastify.db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
-
-  // Handle installation request status sync for installation service requests
-  if (sr.type === ServiceRequestType.INSTALLATION && sr.installationRequestId) {
-    await syncInstallationRequestStatus(sr.installationRequestId, status, user, id);
-  }
-
-  await logActionHistory(createServiceRequestStatusAction(
-    id,
-    oldStatus,
-    status,
-    user.userId,
-    user.role,
-    {
-      hasBeforeImages: !!images?.beforeImages,
-      hasAfterImages: !!images?.afterImages
+  // Log action in history
+  await logActionHistory({
+    entityType: 'service_request',
+    entityId: id,
+    action: `status_updated_to_${status.toLowerCase()}`,
+    performedBy: user.userId,
+    details: {
+      fromStatus: currentStatus,
+      toStatus: status,
+      agentId: data?.agentId,
+      scheduledDate: data?.scheduledDate,
+      paymentAmount: data?.paymentAmount,
+      imagesCount: data?.images?.length || 0
     }
-  ));
+  });
 
-  // TODO: Send notification to customer
+  // If there's a subscription, log it there too
+  if (serviceRequest.subscriptionId) {
+    await logActionHistory({
+      entityType: 'subscription',
+      entityId: serviceRequest.subscriptionId,
+      action: `service_request_${status.toLowerCase()}`,
+      performedBy: user.userId,
+      details: {
+        serviceRequestId: id,
+        status: status
+      }
+    });
+  }
 
   return await getServiceRequestById(id);
 }
