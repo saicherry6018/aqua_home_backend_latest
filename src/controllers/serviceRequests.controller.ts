@@ -162,6 +162,7 @@ export async function updateServiceRequestStatus(
     const { id } = request.params;
     const user = request.user;
 
+
     // Handle form-data parsing for image uploads
     const parts = request.parts();
     const fields: Record<string, any> = {};
@@ -181,7 +182,7 @@ export async function updateServiceRequestStatus(
         // Upload to S3 if available
         if (request.server.uploadToS3) {
           const uploadedUrl = await request.server.uploadToS3(buffer, filename, part.mimetype);
-          
+
           // Categorize images based on field name
           if (part.fieldname === 'beforeImages') {
             beforeImages.push(uploadedUrl);
@@ -195,14 +196,17 @@ export async function updateServiceRequestStatus(
       }
     }
 
+
     // Also check for images passed as arrays in the body (for non-multipart requests)
     const bodyImages = {
       beforeImages: fields.beforeImages ? JSON.parse(fields.beforeImages) : beforeImages,
       afterImages: fields.afterImages ? JSON.parse(fields.afterImages) : afterImages
     };
 
+    console.log('formdata for beforeImages ', bodyImages)
+
     const status = fields.status;
-    const sr = await serviceRequestService.updateServiceRequestStatus(id, status, user, bodyImages);
+    const sr = await serviceRequestService.updateServiceRequestStatus(id, status, user, { images: bodyImages.beforeImages.length > 0 ? bodyImages.beforeImages : bodyImages.afterImages });
     return reply.code(200).send({ message: 'Service request status updated', serviceRequest: sr });
   } catch (error) {
     handleError(error, request, reply);
