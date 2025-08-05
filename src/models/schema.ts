@@ -14,6 +14,7 @@ export const users = sqliteTable(
         city: text('city'),
         alternativePhone: text("alternative_phone"),
         firebaseUid: text("firebase_uid"),
+        pushNotificationToken: text("push_notification_token"),
         hasOnboarded: integer("has_onboarded", { mode: "boolean" }).notNull().default(false),
         isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
         createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
@@ -473,7 +474,7 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
     // Installation request this payment is for (deposit, installation fee)
     installationRequest: one(installationRequests, {
         fields: [payments.installationRequestId],
-        references: [installationRequests.id],
+        references: [installationsRequests.id],
         relationName: "installationPayments",
     }),
 

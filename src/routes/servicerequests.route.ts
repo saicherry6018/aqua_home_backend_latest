@@ -7,6 +7,8 @@ import {
   updateServiceRequestStatus,
   assignServiceAgent,
   scheduleServiceRequest,
+  getAllUnassignedServiceRequests,
+  assignServiceRequestToSelf,
 } from '../controllers/serviceRequests.controller';
 import {
   getAllServiceRequestsSchema,
@@ -21,6 +23,13 @@ import {
   generateInstallationPaymentLink,
   refreshInstallationPaymentStatus,
 } from '../controllers/serviceRequests.controller';
+
+// Import Expo and ExpoPushMessage types
+import Expo from 'expo-server-sdk';
+import { ExpoPushMessage, ExpoPushTicket } from 'expo-server-sdk';
+
+// Create an Expo instance
+const expo = new Expo();
 
 export default async function (fastify: FastifyInstance) {
   // Get all service requests (admin, franchise owner, service agent, customer)
@@ -155,9 +164,71 @@ export default async function (fastify: FastifyInstance) {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   },  (req,res)=>refreshInstallationPaymentStatus(req as any,res));
 
+  // Get all unassigned service requests (for service agents)
+  fastify.get('/unassigned', {
+    preHandler: [fastify.authenticate],
+    schema: getAllServiceRequestsSchema
+  }, getUnassignedServiceRequests);
+
+  // Assign service request to self
+  fastify.post('/:id/assign-to-me', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }
+        },
+        required: ['id']
+      }
+    }
+  }, assignToMe);
+
   // fastify.post('/:id/upload-payment-proof', {
   //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   // }, uploadPaymentProof);
 
   fastify.log.info('Service Request routes registered');
+
+  // Function to send push notifications using Expo
+  fastify.decorate('sendNotification', async (data: { pushToken: string; title: string; message: string; data?: any }) => {
+    if (!Expo.isExpoPushToken(data.pushToken)) {
+      fastify.log.error('Invalid Expo push token');
+      throw new Error('Invalid Expo push token');
+    }
+
+    fastify.log.info('Sending notification...');
+    const message: ExpoPushMessage = {
+      to: data.pushToken,
+      title: data.title,
+      body: data.message,
+      data: data.data || {},
+      sound: 'default',
+      priority: 'high',
+      badge: 1,
+    };
+
+    const chunks = expo.chunkPushNotifications([message]);
+    const tickets: ExpoPushTicket[] = [];
+
+    for (const chunk of chunks) {
+      try {
+        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+        tickets.push(...ticketChunk);
+      } catch (error) {
+        fastify.log.error('Error sending push notification chunk:', error);
+        throw error; // Re-throw to indicate failure
+      }
+    }
+
+    const successfulTickets = tickets.filter(ticket => ticket.status === 'ok');
+
+    return {
+      success: successfulTickets.length > 0,
+      tickets,
+      sentCount: successfulTickets.length
+    };
+  });
+
+  fastify.log.info('Expo notification service decorated');
 }
