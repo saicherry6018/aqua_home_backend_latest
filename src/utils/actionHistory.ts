@@ -31,6 +31,8 @@ export async function logActionHistory(data: ActionHistoryData): Promise<void> {
   try {
     const fastify = getFastifyInstance();
     const id = await generateId('ah');
+
+    console.log('actionhistory data ',data)
     
     await fastify.db.insert(actionHistory).values({
       id,

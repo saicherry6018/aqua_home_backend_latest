@@ -7,6 +7,7 @@ import { notFound, badRequest, forbidden } from '../utils/errors';
 import { getFastifyInstance } from '../shared/fastify-instance';
 import { logActionHistory, createServiceRequestStatusAction } from '../utils/actionHistory';
 
+
 // Helper function to get user by ID
 export async function getUserById(userId: string) {
   const fastify = getFastifyInstance();
@@ -231,7 +232,6 @@ export async function createServiceRequest(data: any, user: any) {
     beforeImages: null,
     afterImages: null,
     requiresPayment: data.requiresPayment || false,
-    paymentAmount: data.paymentAmount || null,
     createdAt: now,
     updatedAt: now,
   };
@@ -332,7 +332,6 @@ export async function createInstallationServiceRequest(data: {
       beforeImages: null,
       afterImages: null,
       requiresPayment: true,
-      paymentAmount: null,
       createdAt: now,
       updatedAt: now,
       requirePayment: true
@@ -390,22 +389,27 @@ export async function createInstallationServiceRequest(data: {
 
 // Update service request status
 export async function updateServiceRequestStatus(
-  id: string, 
-  status: ServiceRequestStatus, 
+  id: string,
+  status: ServiceRequestStatus,
   user: any,
-  data?: { 
+  data?: {
     agentId?: string;
     completedAt?: string;
     scheduledDate?: string;
-    paymentAmount?: number;
     images?: string[];
   }
 ) {
   const fastify = getFastifyInstance();
   const db = fastify.db;
 
+  console.log('status came ', status)
+  console.log('data came ', data)
+  console.log('user ', user)
+
   const serviceRequest = await getServiceRequestById(id);
   if (!serviceRequest) throw notFound('Service Request');
+
+  console.log('serviceRequest ', serviceRequest)
 
   // Validate status transitions and required data
   const currentStatus = serviceRequest.status as ServiceRequestStatus;
@@ -425,6 +429,12 @@ export async function updateServiceRequestStatus(
   if (!validTransitions[currentStatus]?.includes(status)) {
     throw badRequest(`Invalid status transition from ${currentStatus} to ${status}. Valid transitions are: ${validTransitions[currentStatus]?.join(', ') || 'none'}`);
   }
+
+  const updateData: any = {
+    status,
+    updatedAt: new Date().toISOString(),
+  };
+
 
   // Status-specific validations
   switch (status) {
@@ -450,13 +460,12 @@ export async function updateServiceRequestStatus(
       }
       break;
 
+
     case ServiceRequestStatus.PAYMENT_PENDING:
-      if (!serviceRequest.requiresPayment) {
+      if (!serviceRequest.requirePayment) {
         throw badRequest('This service request does not require payment');
       }
-      if (!data?.paymentAmount || data.paymentAmount <= 0) {
-        throw badRequest('Payment amount is required');
-      }
+
       // Require completion images
       if (!data?.images || data.images.length === 0) {
         throw badRequest('Completion images are required before requesting payment');
@@ -465,25 +474,31 @@ export async function updateServiceRequestStatus(
 
     case ServiceRequestStatus.COMPLETED:
       // Require completion images
-      if (!data?.images || data.images.length === 0) {
+      if (!serviceRequest.installationRequestId && (!data?.images || data.images.length === 0)) {
         throw badRequest('Completion images are required to mark as completed');
       }
       // If it requires payment and coming from IN_PROGRESS, must go through PAYMENT_PENDING first
       if (serviceRequest.requiresPayment && currentStatus === ServiceRequestStatus.IN_PROGRESS) {
         throw badRequest('Service requests requiring payment must go through PAYMENT_PENDING status first');
       }
+
+      const paymnet = await db.query.payments.findFirst({
+        where: eq(payments.installationRequestId, serviceRequest.installationRequestId)
+      })
+      if (!paymnet || paymnet.status !== PaymentStatus.COMPLETED || payments.serviceRequestId !== serviceRequest.id) {
+        throw badRequest('Please Complete Payment First');
+      }
       break;
+    case ServiceRequestStatus.CANCELLED:
+      updateData.beforeImages = null
+      updateData.afterImages = null
+      break
   }
 
-  const updateData: any = {
-    status,
-    updatedAt: new Date().toISOString(),
-  };
 
   // Add specific data based on status
   if (data?.agentId) updateData.assignedAgentId = data.agentId;
   if (data?.scheduledDate) updateData.scheduledDate = data.scheduledDate;
-  if (data?.paymentAmount) updateData.paymentAmount = data.paymentAmount;
   if (status === ServiceRequestStatus.COMPLETED) updateData.completedAt = new Date().toISOString();
 
   // Handle images - store them properly as JSON strings
@@ -492,21 +507,22 @@ export async function updateServiceRequestStatus(
     // Ensure images are stored as proper JSON string
     updateData[imageField] = JSON.stringify(data.images);
   }
-
+  console.log('updateData ', updateData)
   await db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
+  await syncInstallationRequestStatus(serviceRequest.installationRequestId, status, user)
 
   // Log action in history
   await logActionHistory({
     entityType: 'service_request',
     entityId: id,
-    action: `status_updated_to_${status.toLowerCase()}`,
+    actionType: `status_updated_to_${status.toLowerCase()}`,
     performedBy: user.userId,
+    performedByRole: user.role,
     details: {
       fromStatus: currentStatus,
       toStatus: status,
       agentId: data?.agentId,
       scheduledDate: data?.scheduledDate,
-      paymentAmount: data?.paymentAmount,
       imagesCount: data?.images?.length || 0
     }
   });
@@ -516,7 +532,8 @@ export async function updateServiceRequestStatus(
     await logActionHistory({
       entityType: 'subscription',
       entityId: serviceRequest.subscriptionId,
-      action: `service_request_${status.toLowerCase()}`,
+      actionType: `service_request_${status.toLowerCase()}`,
+      performedByRole: user.role,
       performedBy: user.userId,
       details: {
         serviceRequestId: id,
@@ -633,8 +650,7 @@ async function validateInstallationSpecificTransitions(
 async function syncInstallationRequestStatus(
   installationRequestId: string,
   serviceRequestStatus: ServiceRequestStatus,
-  user: any,
-  serviceRequestId: string
+  user: any
 ) {
   const fastify = getFastifyInstance();
 
@@ -657,6 +673,10 @@ async function syncInstallationRequestStatus(
     case ServiceRequestStatus.CANCELLED:
       installationStatus = InstallationRequestStatus.CANCELLED;
       installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
+      break;
+    case ServiceRequestStatus.SCHEDULED:
+      installationStatus = InstallationRequestStatus.INSTALLATION_SCHEDULED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_SCHEDULED;
       break;
   }
   await fastify.db.update(installationRequests).set({
@@ -769,7 +789,6 @@ export async function scheduleServiceRequest(id: string, scheduledDate: string, 
   const oldStatus = sr.status;
   await fastify.db.update(serviceRequests).set({
     scheduledDate: scheduledDateTime.toISOString(),
-    status: ServiceRequestStatus.SCHEDULED,
     updatedAt: new Date().toISOString(),
   }).where(eq(serviceRequests.id, id));
 
