@@ -203,12 +203,49 @@ export async function updateServiceRequestStatus(
     const { status, ...data } = request.body;
     const user = request.user as any;
 
-    const result = await serviceRequestService.updateServiceRequestStatus(id, status, user, {
-      agentId: data.agentId,
-      scheduledDate: data.scheduledDate,
-      paymentAmount: data.paymentAmount,
-      images: status === 'IN_PROGRESS' ? data.beforeImages : data.afterImages,
-    });
+     const parts = request.parts();
+      const fields: Record<string, any> = {};
+      const beforeImages: string[] = [];
+      const afterImages: string[] = [];
+
+      for await (const part of parts) {
+        if (part.file) {
+          const filename = `service-requests/${id}/${Date.now()}-${part.filename}`;
+          const chunks: Buffer[] = [];
+          for await (const chunk of part.file) {
+            chunks.push(chunk);
+          }
+          const buffer = Buffer.concat(chunks);
+
+          if (request.server.uploadToS3) {
+            const uploadedUrl = await request.server.uploadToS3(buffer, filename, part.mimetype);
+            if (part.fieldname === 'beforeImages') {
+              beforeImages.push(uploadedUrl);
+            } else if (part.fieldname === 'afterImages') {
+              afterImages.push(uploadedUrl);
+            }
+          }
+        } else {
+          fields[part.fieldname] = part.value;
+        }
+      }
+
+      // Combine images from body and uploaded
+      const bodyImages = {
+        beforeImages: fields.beforeImages ? JSON.parse(fields.beforeImages) : beforeImages,
+        afterImages: fields.afterImages ? JSON.parse(fields.afterImages) : afterImages
+      };
+
+      // Merge all fields to send to service
+      const updatePayload = {
+        ...fields,
+        beforeImages: bodyImages.beforeImages,
+        afterImages: bodyImages.afterImages
+      };
+
+      console.log('Final update payload:', updatePayload);
+
+      const result = await serviceRequestService.updateServiceRequestStatus(id, fields.status, user, updatePayload);
 
     // Send notification based on status change
     if (result && result.assignedToId) {
@@ -241,8 +278,10 @@ export async function updateServiceRequestStatus(
       success: false,
       message: error.message,
     });
+
   }
 }
+
 
 // Assign service agent
 export async function assignServiceAgent(

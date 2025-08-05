@@ -137,7 +137,7 @@ export default async function (fastify: FastifyInstance) {
 
   // Schedule service request
   fastify.patch(
-    '/:id/schedule',
+    '/:id/scheduleDateUpdate',
     {
       schema: scheduleServiceRequestSchema,
       preHandler: [fastify.authenticate],

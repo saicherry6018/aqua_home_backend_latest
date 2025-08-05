@@ -17,15 +17,30 @@ import { getAllServiceAgentsFromDB, serviceAgentAddToDB, serviceAgentUpdateInDB 
 
 export const getAllServiceAgents = async (request: FastifyRequest, reply: FastifyReply) => {
     try {
-        const { id } = request.query;
-        const result = await getAllServiceAgentsFromDB(id);
-        console.log('data is ', result)
-        return reply.code(200).send(result)
+        // Extract query parameters properly
+        const queryParams = request.query as {
+            id?: string;
+            franchiseId?: string;
+            city?: string;
+            isActive?: string;
+        };
+
+        // Convert isActive string to boolean if provided
+        const filters = {
+            id: queryParams.id,
+            franchiseId: queryParams.franchiseId,
+            city: queryParams.city,
+            isActive: queryParams.isActive !== undefined ? queryParams.isActive === 'true' : undefined
+        };
+
+        const result = await getAllServiceAgentsFromDB(filters);
+        console.log('data is ', result);
+        return reply.code(200).send(result);
 
     } catch (error) {
-        return handleError(error, request, reply)
+        return handleError(error, request, reply);
     }
-}
+};
 
 export const updateServiceAgent = async (request: FastifyRequest, reply: FastifyReply) => {
     try {
