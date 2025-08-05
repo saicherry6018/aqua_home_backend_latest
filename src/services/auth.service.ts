@@ -1,7 +1,7 @@
 
 import { and, eq } from 'drizzle-orm';
 import admin from 'firebase-admin';
-import { User, users } from '../models/schema';
+import { franchises, User, users } from '../models/schema';
 import { v4 as uuidv4 } from 'uuid';
 import { UserRole } from '../types';
 import { getFastifyInstance } from '../shared/fastify-instance';
@@ -44,7 +44,7 @@ export async function loginWithFirebase(fastify: any, idToken: string, role: Use
                     createdAt: now.toISOString(),
                     updatedAt: now.toISOString(),
                     isActive: true,
-                    
+
                 });
                 user = await db.query.users.findFirst({ where: eq(users.id, userId) });
             }
