@@ -3,6 +3,59 @@ import * as serviceRequestService from '../services/serviceRequests.service';
 import * as installationRequestService from '../services/installation-request.service';
 import { handleError, forbidden, notFound, badRequest } from "../utils/errors";
 import { ServiceRequestStatus, ServiceRequestType, UserRole } from '../types';
+import Expo from 'expo-server-sdk';
+import { ExpoPushMessage, ExpoPushTicket } from 'expo-server-sdk';
+
+
+// Initialize Expo SDK
+const expo = new Expo();
+
+// Helper function to send push notifications
+async function sendPushNotification(data: { pushToken: string; title: string; message: string; data?: any }) {
+  if (!Expo.isExpoPushToken(data.pushToken)) {
+    console.error('Invalid Expo push token:', data.pushToken);
+    throw new Error('Invalid Expo push token');
+  }
+
+  console.log('Sending notification to:', data.pushToken);
+  const message: ExpoPushMessage = {
+    to: data.pushToken,
+    title: data.title,
+    body: data.message,
+    data: data.data || {},
+    sound: 'default',
+    priority: 'high',
+    badge: 1,
+  };
+
+  const chunks = expo.chunkPushNotifications([message]);
+  const tickets: ExpoPushTicket[] = [];
+
+  for (const chunk of chunks) {
+    try {
+      const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
+      tickets.push(...ticketChunk);
+    } catch (error) {
+      console.error('Error sending push notification chunk:', error);
+      // Depending on your error handling strategy, you might want to throw or log and continue
+    }
+  }
+
+  const successfulTickets = tickets.filter(ticket => ticket.status === 'ok');
+  const failedTickets = tickets.filter(ticket => ticket.status !== 'ok');
+
+  if (failedTickets.length > 0) {
+    console.error('Failed to send notifications:', failedTickets);
+  }
+
+  return {
+    success: successfulTickets.length > 0,
+    tickets,
+    sentCount: successfulTickets.length,
+    failedCount: failedTickets.length,
+  };
+}
+
 
 // Get all service requests
 export async function getAllServiceRequests(
@@ -118,6 +171,20 @@ export async function createServiceRequest(
     console.log('Service request data:', serviceRequestData);
 
     const sr = await serviceRequestService.createServiceRequest(serviceRequestData, user);
+
+    // Send notification to the assigned agent if available
+    if (sr.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(sr.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        await sendPushNotification({
+          pushToken: assignedAgent.pushToken,
+          title: 'New Service Request Assigned',
+          message: `A new service request #${sr.id} has been assigned to you.`,
+          data: { serviceRequestId: sr.id, type: 'NEW_ASSIGNMENT' },
+        });
+      }
+    }
+
     return reply.code(201).send({ message: 'Service request created', serviceRequest: sr });
   } catch (error) {
     console.error('Error creating service request:', error);
@@ -146,6 +213,20 @@ export async function createInstallationServiceRequest(
       description: description || "Installation service request"
     }, user);
 
+    // Send notification to the assigned agent if available
+    if (sr.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(sr.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        await sendPushNotification({
+          pushToken: assignedAgent.pushToken,
+          title: 'New Installation Service Request',
+          message: `A new installation service request #${sr.id} has been assigned to you.`,
+          data: { serviceRequestId: sr.id, type: 'NEW_INSTALLATION_ASSIGNMENT' },
+        });
+      }
+    }
+
+
     return reply.code(201).send({ message: 'Installation service request created', serviceRequest: sr });
   } catch (error) {
     console.error('Error creating installation service request:', error);
@@ -155,57 +236,62 @@ export async function createInstallationServiceRequest(
 
 // Update service request status
 export async function updateServiceRequestStatus(
-  request: FastifyRequest<{ Params: { id: string }; Body: { status: string; beforeImages?: string[]; afterImages?: string[] } }>,
+  request: FastifyRequest<{
+    Params: { id: string };
+    Body: {
+      status: ServiceRequestStatus;
+      agentId?: string;
+      scheduledDate?: string;
+      paymentAmount?: number;
+      beforeImages?: string[];
+      afterImages?: string[];
+    };
+  }>,
   reply: FastifyReply
 ) {
   try {
     const { id } = request.params;
-    const user = request.user;
+    const { status, ...data } = request.body;
+    const user = request.user as any;
 
-    // Handle form-data parsing for image uploads
-    const parts = request.parts();
-    const fields: Record<string, any> = {};
-    const beforeImages: string[] = [];
-    const afterImages: string[] = [];
+    const result = await serviceRequestService.updateServiceRequestStatus(id, status, user, {
+      agentId: data.agentId,
+      scheduledDate: data.scheduledDate,
+      paymentAmount: data.paymentAmount,
+      images: status === 'IN_PROGRESS' ? data.beforeImages : data.afterImages,
+    });
 
-    for await (const part of parts) {
-      if (part.file) {
-        // Handle image file uploads
-        const filename = `service-requests/${id}/${Date.now()}-${part.filename}`;
-        const chunks: Buffer[] = [];
-        for await (const chunk of part.file) {
-          chunks.push(chunk);
+    // Send notification based on status change
+    if (result && result.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(result.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        if (status === 'COMPLETED') {
+          await sendPushNotification({
+            pushToken: assignedAgent.pushToken,
+            title: 'Service Request Completed',
+            message: `Service request #${id} has been completed.`,
+            data: { serviceRequestId: id, type: 'COMPLETED' },
+          });
+        } else if (status === 'CANCELLED') {
+          await sendPushNotification({
+            pushToken: assignedAgent.pushToken,
+            title: 'Service Request Cancelled',
+            message: `Service request #${id} has been cancelled.`,
+            data: { serviceRequestId: id, type: 'CANCELLED' },
+          });
         }
-        const buffer = Buffer.concat(chunks);
-
-        // Upload to S3 if available
-        if (request.server.uploadToS3) {
-          const uploadedUrl = await request.server.uploadToS3(buffer, filename, part.mimetype);
-          
-          // Categorize images based on field name
-          if (part.fieldname === 'beforeImages') {
-            beforeImages.push(uploadedUrl);
-          } else if (part.fieldname === 'afterImages') {
-            afterImages.push(uploadedUrl);
-          }
-        }
-      } else {
-        // Handle regular form fields
-        fields[part.fieldname] = part.value;
       }
     }
 
-    // Also check for images passed as arrays in the body (for non-multipart requests)
-    const bodyImages = {
-      beforeImages: fields.beforeImages ? JSON.parse(fields.beforeImages) : beforeImages,
-      afterImages: fields.afterImages ? JSON.parse(fields.afterImages) : afterImages
-    };
-
-    const status = fields.status;
-    const sr = await serviceRequestService.updateServiceRequestStatus(id, status, user, bodyImages);
-    return reply.code(200).send({ message: 'Service request status updated', serviceRequest: sr });
-  } catch (error) {
-    handleError(error, request, reply);
+    reply.code(200).send({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    reply.code(error.statusCode || 500).send({
+      success: false,
+      message: error.message,
+    });
   }
 }
 
@@ -219,6 +305,20 @@ export async function assignServiceAgent(
     const { assignedToId } = request.body;
     const user = request.user;
     const sr = await serviceRequestService.assignServiceAgent(id, assignedToId, user);
+
+    // Notify the newly assigned agent
+    if (sr && sr.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(sr.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        await sendPushNotification({
+          pushToken: assignedAgent.pushToken,
+          title: 'New Service Request Assigned',
+          message: `Service request #${id} has been assigned to you.`,
+          data: { serviceRequestId: id, type: 'NEW_ASSIGNMENT' },
+        });
+      }
+    }
+
     return reply.code(200).send({ message: 'Service agent assigned', serviceRequest: sr });
   } catch (error) {
     handleError(error, request, reply);
@@ -236,6 +336,20 @@ export async function scheduleServiceRequest(
     const user = request.user;
 
     const sr = await serviceRequestService.scheduleServiceRequest(id, scheduledDate, user);
+
+    // Notify the assigned agent about the schedule
+    if (sr && sr.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(sr.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        await sendPushNotification({
+          pushToken: assignedAgent.pushToken,
+          title: 'Service Request Scheduled',
+          message: `Service request #${id} has been scheduled for ${scheduledDate}.`,
+          data: { serviceRequestId: id, type: 'SCHEDULED' },
+        });
+      }
+    }
+
     return reply.code(200).send({ message: 'Service request scheduled', serviceRequest: sr });
   } catch (error) {
     handleError(error, request, reply);
@@ -310,9 +424,21 @@ export async function refreshInstallationPaymentStatus(
     if (result.paymentStatus === 'COMPLETED') {
       await serviceRequestService.updateServiceRequestStatus(
         request.params.id,
-        'COMPLETED' as any,
+        'COMPLETED' as any, // Consider using a more specific type or enum for status
         request.user
       );
+      // Notify the customer about payment completion
+      if (serviceRequest.customerId) {
+        const customer = await serviceRequestService.getUserById(serviceRequest.customerId);
+        if (customer && customer.pushToken) {
+          await sendPushNotification({
+            pushToken: customer.pushToken,
+            title: 'Payment Completed',
+            message: `Your payment for service request #${request.params.id} has been completed.`,
+            data: { serviceRequestId: request.params.id, type: 'PAYMENT_COMPLETED' },
+          });
+        }
+      }
     }
 
     return reply.code(200).send(result);
@@ -364,9 +490,22 @@ export async function verifyInstallationPayment(
     // Update service request status to completed
     await serviceRequestService.updateServiceRequestStatus(
       request.params.id,
-      'COMPLETED' as any,
+      'COMPLETED' as any, // Consider using a more specific type or enum for status
       request.user
     );
+
+    // Notify the customer about payment completion
+    if (serviceRequest.customerId) {
+      const customer = await serviceRequestService.getUserById(serviceRequest.customerId);
+      if (customer && customer.pushToken) {
+        await sendPushNotification({
+          pushToken: customer.pushToken,
+          title: 'Payment Verified',
+          message: `Your payment for service request #${request.params.id} has been verified and the request is completed.`,
+          data: { serviceRequestId: request.params.id, type: 'PAYMENT_VERIFIED_COMPLETED' },
+        });
+      }
+    }
 
     return reply.code(200).send(result);
   } catch (error) {
@@ -375,30 +514,59 @@ export async function verifyInstallationPayment(
 }
 
 // Get all unassigned service requests
-export async function getAllUnassignedServiceRequests(
+export async function getUnassignedServiceRequests(
   request: FastifyRequest,
   reply: FastifyReply
 ) {
   try {
-    const user = request.user;
-    const unassignedRequests = await serviceRequestService.getAllUnassignedServiceRequests(user);
-    return reply.code(200).send(unassignedRequests);
-  } catch (error) {
-    handleError(error, request, reply);
+    const user = request.user as any;
+    const result = await serviceRequestService.getAllUnassignedServiceRequests(user);
+
+    reply.code(200).send({
+      success: true,
+      data: result,
+    });
+  } catch (error: any) {
+    reply.code(error.statusCode || 500).send({
+      success: false,
+      message: error.message,
+    });
   }
 }
 
 // Assign service request to self
-export async function assignServiceRequestToSelf(
+export async function assignToMe(
   request: FastifyRequest<{ Params: { id: string } }>,
   reply: FastifyReply
 ) {
   try {
     const { id } = request.params;
-    const user = request.user;
-    const sr = await serviceRequestService.assignServiceRequestToSelf(id, user);
-    return reply.code(200).send({ message: 'Service request assigned to you', serviceRequest: sr });
-  } catch (error) {
-    handleError(error, request, reply);
+    const user = request.user as any;
+
+    const result = await serviceRequestService.assignServiceRequestToSelf(id, user);
+
+    // Notify the assigned agent
+    if (result && result.assignedToId) {
+      const assignedAgent = await serviceRequestService.getUserById(result.assignedToId);
+      if (assignedAgent && assignedAgent.pushToken) {
+        await sendPushNotification({
+          pushToken: assignedAgent.pushToken,
+          title: 'New Service Request Assigned',
+          message: `Service request #${id} has been assigned to you.`,
+          data: { serviceRequestId: id, type: 'NEW_ASSIGNMENT' },
+        });
+      }
+    }
+
+    reply.code(200).send({
+      success: true,
+      data: result,
+      message: 'Service request assigned to you successfully',
+    });
+  } catch (error: any) {
+    reply.code(error.statusCode || 500).send({
+      success: false,
+      message: error.message,
+    });
   }
 }

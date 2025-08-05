@@ -1022,29 +1022,20 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
   }
 }
 
-// Helper function to send push notification
-async function sendPushNotification(token: string, title: string, message: string, data: any) {
-  const fastify = getFastifyInstance();
-  
-  if (!fastify.firebase) {
-    console.warn('Firebase not configured, skipping push notification');
-    return;
-  }
+// Helper function to send push notification using Expo
+import { sendPushNotification as sendExpoPushNotification } from './notification.service';
 
+async function sendPushNotification(token: string, title: string, message: string, data: any) {
   try {
-    const payload = {
-      notification: {
-        title,
-        body: message,
-      },
+    await sendExpoPushNotification({
+      title,
+      message,
+      registrationTokens: [token],
       data: {
         ...data,
         type: 'service_request'
-      },
-      token: token
-    };
-
-    await fastify.firebase.messaging().send(payload);
+      }
+    });
   } catch (error) {
     console.error('Push notification error:', error);
   }

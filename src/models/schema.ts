@@ -474,7 +474,7 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
     // Installation request this payment is for (deposit, installation fee)
     installationRequest: one(installationRequests, {
         fields: [payments.installationRequestId],
-        references: [installationRequests.id],
+        references: [installationsRequests.id],
         relationName: "installationPayments",
     }),
 
