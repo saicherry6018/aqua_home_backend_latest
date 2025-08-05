@@ -1401,11 +1401,11 @@ async function sendInstallationRequestNotifications(
             targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
             // Also notify service agents if it's not an installation type (this logic might need to be adjusted based on where this function is called)
             if (request.type !== ServiceRequestType.INSTALLATION) {
-                const franchiseAgents = await db.query.franchiseAgents.findMany({
+                const franchiseAgentsReturned = await db.query.franchiseAgents.findMany({
                     where: eq(franchiseAgents.franchiseId, request.franchiseId),
                     columns: { agentId: true },
                 });
-                targetUserIds.push(...franchiseAgents.map(agent => agent.agentId));
+                targetUserIds.push(...franchiseAgentsReturned.map(agent => agent.agentId));
             }
             break;
         case 'scheduled':

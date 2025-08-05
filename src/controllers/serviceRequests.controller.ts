@@ -200,7 +200,7 @@ export async function updateServiceRequestStatus(
 ) {
   try {
     const { id } = request.params;
-    const { status, ...data } = request.body;
+ 
     const user = request.user as any;
 
      const parts = request.parts();

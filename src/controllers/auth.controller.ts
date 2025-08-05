@@ -3,8 +3,7 @@ import * as authService from '../services/auth.service';
 import { handleError, notFound } from "../utils/errors";
 import * as userService from '../services/user.service'
 import { UserRole } from "@/types";
-import Expo from "expo-server-sdk";
-import { ExpoPushMessage, ExpoPushTicket } from "expo-server-sdk";
+
 
 export async function login(
     request: FastifyRequest<{ Body: { idToken: string; role: UserRole } }>,

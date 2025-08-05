@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { checkRoleSchema, loginSchema, meSchema, onboardUserSchema, refreshTokenSchema } from "../schemas/auth.schema";
-import { login, refreshToken,onboard,me, checkRole } from "../controllers/auth.controller";
-import { registerPushToken } from "../controllers/notification.controller"; // Assuming registerPushToken is in notification.controller
+import { login, refreshToken,onboard,me, checkRole, registerPushToken } from "../controllers/auth.controller";
+
 
 
 export default async function (fastify: FastifyInstance) {

@@ -2,7 +2,6 @@ import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core
 import { InstallationRequestStatus, RentalStatus, ServiceRequestStatus, ServiceRequestType, UserRole, PaymentStatus, PaymentType, ActionType } from "../types";
 import { InferSelectModel, relations, sql } from "drizzle-orm";
 import { boolean } from "drizzle-orm/mysql-core";
-import { number } from "zod";
 
 export const users = sqliteTable(
     "users",
@@ -474,7 +473,7 @@ export const paymentsRelations = relations(payments, ({ one }) => ({
     // Installation request this payment is for (deposit, installation fee)
     installationRequest: one(installationRequests, {
         fields: [payments.installationRequestId],
-        references: [installationsRequests.id],
+        references: [installationRequests.id],
         relationName: "installationPayments",
     }),
 

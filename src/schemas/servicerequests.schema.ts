@@ -17,6 +17,7 @@ export const UserInServiceRequestSchema = z.object({
   firebaseUid: z.string().nullable().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  pushNotificationToken:z.string().optional().nullable()
 });
 
 // Service Request Schema - Updated to handle both subscription and installation cases

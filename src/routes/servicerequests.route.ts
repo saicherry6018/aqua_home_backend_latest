@@ -7,8 +7,8 @@ import {
   updateServiceRequestStatus,
   assignServiceAgent,
   scheduleServiceRequest,
-  getAllUnassignedServiceRequests,
-  assignServiceRequestToSelf,
+  getUnassignedServiceRequests,
+  assignToMe,
 } from '../controllers/serviceRequests.controller';
 import {
   getAllServiceRequestsSchema,
@@ -182,7 +182,7 @@ export default async function (fastify: FastifyInstance) {
         required: ['id']
       }
     }
-  }, assignToMe);
+  },(req,res) =>assignToMe(req as any,res));
 
   // fastify.post('/:id/upload-payment-proof', {
   //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
@@ -190,45 +190,6 @@ export default async function (fastify: FastifyInstance) {
 
   fastify.log.info('Service Request routes registered');
 
-  // Function to send push notifications using Expo
-  fastify.decorate('sendNotification', async (data: { pushToken: string; title: string; message: string; data?: any }) => {
-    if (!Expo.isExpoPushToken(data.pushToken)) {
-      fastify.log.error('Invalid Expo push token');
-      throw new Error('Invalid Expo push token');
-    }
 
-    fastify.log.info('Sending notification...');
-    const message: ExpoPushMessage = {
-      to: data.pushToken,
-      title: data.title,
-      body: data.message,
-      data: data.data || {},
-      sound: 'default',
-      priority: 'high',
-      badge: 1,
-    };
 
-    const chunks = expo.chunkPushNotifications([message]);
-    const tickets: ExpoPushTicket[] = [];
-
-    for (const chunk of chunks) {
-      try {
-        const ticketChunk = await expo.sendPushNotificationsAsync(chunk);
-        tickets.push(...ticketChunk);
-      } catch (error) {
-        fastify.log.error('Error sending push notification chunk:', error);
-        throw error; // Re-throw to indicate failure
-      }
-    }
-
-    const successfulTickets = tickets.filter(ticket => ticket.status === 'ok');
-
-    return {
-      success: successfulTickets.length > 0,
-      tickets,
-      sentCount: successfulTickets.length
-    };
-  });
-
-  fastify.log.info('Expo notification service decorated');
 }
