@@ -1505,285 +1505,121 @@ function getTargetScreen(request: any, action: string): string {
     }
 }
 
-async function registerPushNotificationToken(userId: string, token: string) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
-
-    const user = await db.query.users.findFirst({
-        where: eq(users.id, userId),
-        columns: { id: true, pushNotificationToken: true }
-    });
-
-    if (!user) {
-        throw notFound('User');
-    }
-
-    if (user.pushNotificationToken !== token) {
-        await db.update(users).set({ pushNotificationToken: token }).where(eq(users.id, userId));
-    }
-}
-
-async function getUnassignedServiceRequests(
-    user: { userId: string; role: UserRole },
-    filters: {
-        franchiseId?: string;
-        type?: string;
-        status?: string;
-        page?: number;
-        limit?: number;
-    }
-) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
-    const page = filters.page || 1;
-    const limit = filters.limit || 10;
-    const offset = (page - 1) * limit;
-
-    let whereConditions: any[] = [];
-
-    // Filter for unassigned service requests
-    whereConditions.push(eq(serviceRequests.assignedToId, null));
-    whereConditions.push(eq(serviceRequests.type, ServiceRequestType.INSTALLATION)); // Assuming INSTALLATION type is what needs to be unassigned
-
-    // Add franchise filtering if provided
-    if (filters.franchiseId) {
-        whereConditions.push(eq(serviceRequests.franchiseId, filters.franchiseId));
-    }
-
-    // Add type filtering if provided
-    if (filters.type) {
-        whereConditions.push(eq(serviceRequests.type, filters.type));
-    }
-
-    // Add status filtering if provided
-    if (filters.status) {
-        whereConditions.push(eq(serviceRequests.status, filters.status));
-    }
-
-    // Role-based filtering for franchise owner and admin
-    if (user.role === UserRole.FRANCHISE_OWNER) {
-        const franchise = await db.query.franchises.findFirst({
-            where: eq(franchises.ownerId, user.userId)
-        });
-        if (franchise) {
-            whereConditions.push(eq(serviceRequests.franchiseId, franchise.id));
-        } else {
-            // Franchise owner without a franchise cannot see anything
-            return { serviceRequests: [], pagination: { page, limit, total: 0, totalPages: 0 } };
-        }
-    }
-    // ADMIN can see all
-
-    const whereClause = whereConditions.length > 0 ? and(...whereConditions) : undefined;
-
-    const requests = await db.query.serviceRequests.findMany({
-        where: whereClause,
-        with: {
-            customer: { columns: { name: true, phoneNumber: true } },
-            franchise: { columns: { name: true } },
-            product: { columns: { name: true } },
-            assignedTo: { columns: { name: true } } // To show assigned technician name if any (though we are filtering for unassigned)
-        },
-        orderBy: [desc(serviceRequests.createdAt)],
-        limit,
-        offset
-    });
-
-    // Get total count
-    const [{ total }] = await db.select({ total: count() })
-        .from(serviceRequests)
-        .where(whereClause);
-
-    return {
-        serviceRequests: requests,
-        pagination: {
-            page,
-            limit,
-            total,
-            totalPages: Math.ceil(total / limit)
-        }
-    };
-}
 
 
-async function assignServiceRequestToSelf(serviceRequestId: string, agentId: string) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
 
-    // Check if the service request exists and is unassigned
-    const serviceRequest = await db.query.serviceRequests.findFirst({
-        where: and(
-            eq(serviceRequests.id, serviceRequestId),
-            eq(serviceRequests.assignedToId, null) // Ensure it's unassigned
-        ),
-        with: { franchise: true, customer: true, product: true }
-    });
+// async function sendServiceRequestNotifications(
+//     request: any,
+//     action: 'created' | 'assigned' | 'reassigned' | 'completed' | 'cancelled' | 'scheduled',
+//     currentUser: { userId: string; role: UserRole },
+//     previousAgentId?: string // For reassignment notifications
+// ) {
+//     const fastify = getFastifyInstance();
+//     const db = fastify.db;
 
-    if (!serviceRequest) {
-        throw notFound('Service request or it is already assigned.');
-    }
+//     let title = '';
+//     let message = '';
+//     let targetUserIds: string[] = [];
+//     let targetUserRoles: UserRole[] = [];
 
-    // Check if the agent is active in the franchise
-    const franchiseAgent = await db.query.franchiseAgents.findFirst({
-        where: and(
-            eq(franchiseAgents.agentId, agentId),
-            eq(franchiseAgents.franchiseId, serviceRequest.franchiseId),
-            eq(franchiseAgents.isActive, true)
-        )
-    });
+//     switch (action) {
+//         case 'created':
+//             if (request.type !== ServiceRequestType.INSTALLATION) {
+//                 title = 'New Service Request';
+//                 message = `A new service request #${request.id} (${request.type}) has been created for ${request.customerName}.`;
+//                 targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
 
-    if (!franchiseAgent) {
-        throw forbidden('You are not an active agent in this franchise.');
-    }
+//                 const franchiseAgents = await db.query.franchiseAgents.findMany({
+//                     where: eq(franchiseAgents.franchiseId, request.franchiseId),
+//                     columns: { agentId: true },
+//                 });
+//                 targetUserIds.push(...franchiseAgents.map(agent => agent.agentId));
+//             } else {
+//                 // Installation requests are handled by sendInstallationRequestNotifications
+//                 return;
+//             }
+//             break;
+//         case 'assigned':
+//         case 'reassigned':
+//             title = 'Service Request Assigned';
+//             message = `Service request #${request.id} (${request.type}) has been ${action === 'reassigned' ? 'reassigned' : 'assigned'} to you.`;
+//             if (request.assignedToId) targetUserIds.push(request.assignedToId);
+//             targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
 
-    // Assign the service request to the agent
-    const [updatedServiceRequest] = await db.update(serviceRequests)
-        .set({
-            assignedToId: agentId,
-            status: ServiceRequestStatus.ASSIGNED, // Assuming 'ASSIGNED' is a valid status
-            updatedAt: new Date().toISOString()
-        })
-        .where(eq(serviceRequests.id, serviceRequestId))
-        .returning();
+//             if (action === 'reassigned' && previousAgentId) {
+//                 // Notify the previous agent
+//                 const previousAgent = await db.query.users.findFirst({
+//                     where: eq(users.id, previousAgentId),
+//                     columns: { pushNotificationToken: true }
+//                 });
+//                 if (previousAgent && previousAgent.pushNotificationToken) {
+//                     await notificationService.sendPushNotification({
+//                         title: 'Service Request Reassigned',
+//                         message: `Service request #${request.id} (${request.type}) has been reassigned from you.`,
+//                         registrationTokens: [previousAgent.pushNotificationToken],
+//                         data: { screen: `/service-requests/${request.id}` }
+//                     });
+//                 }
+//             }
+//             break;
+//         case 'completed':
+//             title = 'Service Request Completed';
+//             message = `Service request #${request.id} (${request.type}) has been completed.`;
+//             targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
+//             if (request.customerId) targetUserIds.push(request.customerId);
+//             if (request.assignedToId) targetUserIds.push(request.assignedToId);
+//             break;
+//         case 'cancelled':
+//             title = 'Service Request Cancelled';
+//             message = `Service request #${request.id} (${request.type}) has been cancelled.`;
+//             targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
+//             if (request.customerId) targetUserIds.push(request.customerId);
+//             if (request.assignedToId) targetUserIds.push(request.assignedToId);
+//             break;
+//         case 'scheduled':
+//             title = 'Service Request Scheduled';
+//             message = `Service request #${request.id} (${request.type}) has been scheduled for ${request.scheduledDate}.`;
+//             targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
+//             if (request.customerId) targetUserIds.push(request.customerId);
+//             if (request.assignedToId) targetUserIds.push(request.assignedToId);
+//             break;
+//         default:
+//             return;
+//     }
 
-    // Log action history
-    await logActionHistory({
-        serviceRequestId: serviceRequestId,
-        actionType: ActionType.SERVICE_REQUEST_ASSIGNED,
-        fromStatus: ServiceRequestStatus.OPEN, // Assuming 'OPEN' was the previous status
-        toStatus: ServiceRequestStatus.ASSIGNED,
-        performedBy: agentId,
-        performedByRole: UserRole.SERVICE_AGENT,
-        comment: 'Self-assigned service request',
-        metadata: JSON.stringify({ assignedById: agentId })
-    });
+//     let usersToNotify: any[] = [];
 
-    // Send push notifications to the assigned agent, previous agent (if any), franchise owner, and admin
-    const userPerformingAction = await db.query.users.findFirst({ where: eq(users.id, agentId), columns: { role: true } });
-    if (userPerformingAction) {
-        await sendServiceRequestNotifications(updatedServiceRequest, 'reassigned', userPerformingAction, serviceRequest.assignedToId); // Pass the previous assignee if available
-    }
+//     if (targetUserRoles.length > 0) {
+//         const roleBasedUsers = await db.query.users.findMany({
+//             where: or(...targetUserRoles.map(role => eq(users.role, role))),
+//             columns: { id: true, pushNotificationToken: true }
+//         });
+//         usersToNotify.push(...roleBasedUsers);
+//     }
 
+//     if (targetUserIds.length > 0) {
+//         const specificUsers = await db.query.users.findMany({
+//             where: or(...targetUserIds.map(id => eq(users.id, id))),
+//             columns: { id: true, pushNotificationToken: true }
+//         });
+//         const existingUserIds = new Set(usersToNotify.map(u => u.id));
+//         specificUsers.forEach(user => {
+//             if (!existingUserIds.has(user.id)) {
+//                 usersToNotify.push(user);
+//             }
+//         });
+//     }
 
-    return {
-        message: 'Service request assigned to you successfully',
-        serviceRequest: updatedServiceRequest
-    };
-}
+//     const finalUsersToNotify = usersToNotify.filter(user => user.id !== currentUser.userId && user.pushNotificationToken);
 
-
-async function sendServiceRequestNotifications(
-    request: any,
-    action: 'created' | 'assigned' | 'reassigned' | 'completed' | 'cancelled' | 'scheduled',
-    currentUser: { userId: string; role: UserRole },
-    previousAgentId?: string // For reassignment notifications
-) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
-
-    let title = '';
-    let message = '';
-    let targetUserIds: string[] = [];
-    let targetUserRoles: UserRole[] = [];
-
-    switch (action) {
-        case 'created':
-            if (request.type !== ServiceRequestType.INSTALLATION) {
-                title = 'New Service Request';
-                message = `A new service request #${request.id} (${request.type}) has been created for ${request.customerName}.`;
-                targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
-
-                const franchiseAgents = await db.query.franchiseAgents.findMany({
-                    where: eq(franchiseAgents.franchiseId, request.franchiseId),
-                    columns: { agentId: true },
-                });
-                targetUserIds.push(...franchiseAgents.map(agent => agent.agentId));
-            } else {
-                // Installation requests are handled by sendInstallationRequestNotifications
-                return;
-            }
-            break;
-        case 'assigned':
-        case 'reassigned':
-            title = 'Service Request Assigned';
-            message = `Service request #${request.id} (${request.type}) has been ${action === 'reassigned' ? 'reassigned' : 'assigned'} to you.`;
-            if (request.assignedToId) targetUserIds.push(request.assignedToId);
-            targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
-
-            if (action === 'reassigned' && previousAgentId) {
-                // Notify the previous agent
-                const previousAgent = await db.query.users.findFirst({
-                    where: eq(users.id, previousAgentId),
-                    columns: { pushNotificationToken: true }
-                });
-                if (previousAgent && previousAgent.pushNotificationToken) {
-                    await notificationService.sendPushNotification({
-                        title: 'Service Request Reassigned',
-                        message: `Service request #${request.id} (${request.type}) has been reassigned from you.`,
-                        registrationTokens: [previousAgent.pushNotificationToken],
-                        data: { screen: `/service-requests/${request.id}` }
-                    });
-                }
-            }
-            break;
-        case 'completed':
-            title = 'Service Request Completed';
-            message = `Service request #${request.id} (${request.type}) has been completed.`;
-            targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
-            if (request.customerId) targetUserIds.push(request.customerId);
-            if (request.assignedToId) targetUserIds.push(request.assignedToId);
-            break;
-        case 'cancelled':
-            title = 'Service Request Cancelled';
-            message = `Service request #${request.id} (${request.type}) has been cancelled.`;
-            targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
-            if (request.customerId) targetUserIds.push(request.customerId);
-            if (request.assignedToId) targetUserIds.push(request.assignedToId);
-            break;
-        case 'scheduled':
-            title = 'Service Request Scheduled';
-            message = `Service request #${request.id} (${request.type}) has been scheduled for ${request.scheduledDate}.`;
-            targetUserRoles = [UserRole.FRANCHISE_OWNER, UserRole.ADMIN];
-            if (request.customerId) targetUserIds.push(request.customerId);
-            if (request.assignedToId) targetUserIds.push(request.assignedToId);
-            break;
-        default:
-            return;
-    }
-
-    let usersToNotify: any[] = [];
-
-    if (targetUserRoles.length > 0) {
-        const roleBasedUsers = await db.query.users.findMany({
-            where: or(...targetUserRoles.map(role => eq(users.role, role))),
-            columns: { id: true, pushNotificationToken: true }
-        });
-        usersToNotify.push(...roleBasedUsers);
-    }
-
-    if (targetUserIds.length > 0) {
-        const specificUsers = await db.query.users.findMany({
-            where: or(...targetUserIds.map(id => eq(users.id, id))),
-            columns: { id: true, pushNotificationToken: true }
-        });
-        const existingUserIds = new Set(usersToNotify.map(u => u.id));
-        specificUsers.forEach(user => {
-            if (!existingUserIds.has(user.id)) {
-                usersToNotify.push(user);
-            }
-        });
-    }
-
-    const finalUsersToNotify = usersToNotify.filter(user => user.id !== currentUser.userId && user.pushNotificationToken);
-
-    if (finalUsersToNotify.length > 0) {
-        await notificationService.sendPushNotification({
-            title,
-            message,
-            registrationTokens: finalUsersToNotify.map(user => user.pushNotificationToken),
-            data: {
-                screen: `/service-requests/${request.id}` // Example screen navigation
-            }
-        });
-    }
-}
+//     if (finalUsersToNotify.length > 0) {
+//         await notificationService.sendPushNotification({
+//             title,
+//             message,
+//             registrationTokens: finalUsersToNotify.map(user => user.pushNotificationToken),
+//             data: {
+//                 screen: `/service-requests/${request.id}` // Example screen navigation
+//             }
+//         });
+//     }
+// }
