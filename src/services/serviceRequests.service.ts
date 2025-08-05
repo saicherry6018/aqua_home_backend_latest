@@ -396,7 +396,8 @@ export async function updateServiceRequestStatus(
     agentId?: string;
     completedAt?: string;
     scheduledDate?: string;
-    images?: string[];
+    beforeImages?: string[];
+    afterImages?:string[];
   }
 ) {
   const fastify = getFastifyInstance();
@@ -455,7 +456,7 @@ export async function updateServiceRequestStatus(
 
     case ServiceRequestStatus.IN_PROGRESS:
       // For installation type, require before images
-      if (serviceRequest.type === 'installation' && (!data?.images || data.images.length === 0)) {
+      if (serviceRequest.type === 'installation' && (!data?.beforeImages || data.beforeImages.length === 0)) {
         throw badRequest('Before images are required to start installation service requests');
       }
       break;
@@ -467,14 +468,14 @@ export async function updateServiceRequestStatus(
       }
 
       // Require completion images
-      if (!data?.images || data.images.length === 0) {
+      if (!data?.afterImages || data.afterImages.length === 0) {
         throw badRequest('Completion images are required before requesting payment');
       }
       break;
 
     case ServiceRequestStatus.COMPLETED:
       // Require completion images
-      if (!serviceRequest.installationRequestId && (!data?.images || data.images.length === 0)) {
+      if (!serviceRequest.installationRequestId && (!data?.afterImages || data.afterImages.length === 0)) {
         throw badRequest('Completion images are required to mark as completed');
       }
       // If it requires payment and coming from IN_PROGRESS, must go through PAYMENT_PENDING first
@@ -485,7 +486,7 @@ export async function updateServiceRequestStatus(
       const paymnet = await db.query.payments.findFirst({
         where: eq(payments.installationRequestId, serviceRequest.installationRequestId)
       })
-      if (!paymnet || paymnet.status !== PaymentStatus.COMPLETED || payments.serviceRequestId !== serviceRequest.id) {
+      if (!paymnet || paymnet.status !== PaymentStatus.COMPLETED || paymnet.installationRequestId !== serviceRequest.installationRequestId) {
         throw badRequest('Please Complete Payment First');
       }
       break;
@@ -502,10 +503,15 @@ export async function updateServiceRequestStatus(
   if (status === ServiceRequestStatus.COMPLETED) updateData.completedAt = new Date().toISOString();
 
   // Handle images - store them properly as JSON strings
-  if (data?.images && data.images.length > 0) {
+  if (data?.afterImages && data.afterImages.length > 0) {
     const imageField = status === ServiceRequestStatus.IN_PROGRESS ? 'beforeImages' : 'afterImages';
     // Ensure images are stored as proper JSON string
-    updateData[imageField] = JSON.stringify(data.images);
+    updateData[imageField] = JSON.stringify(data.afterImages);
+  }
+  if (data?.beforeImages && data.beforeImages.length > 0) {
+    const imageField = status === ServiceRequestStatus.IN_PROGRESS ? 'beforeImages' : 'afterImages';
+    // Ensure images are stored as proper JSON string
+    updateData[imageField] = JSON.stringify(data.beforeImages);
   }
   console.log('updateData ', updateData)
   await db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
