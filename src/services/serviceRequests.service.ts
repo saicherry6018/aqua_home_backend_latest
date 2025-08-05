@@ -1022,15 +1022,15 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
   }
 }
 
-// Helper function to send push notification using Expo
-import { sendPushNotification as sendExpoPushNotification } from './notification.service';
+// Helper function to send push notification using NotificationService
+import { notificationService } from './notification.service';
 
 async function sendPushNotification(token: string, title: string, message: string, data: any) {
   try {
-    await sendExpoPushNotification({
+    await notificationService.sendSinglePushNotification({
+      pushToken: token,
       title,
       message,
-      registrationTokens: [token],
       data: {
         ...data,
         type: 'service_request'
