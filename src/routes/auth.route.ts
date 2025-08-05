@@ -50,5 +50,15 @@ export default async function (fastify: FastifyInstance) {
         checkRole
       )
 
+    // Register push token
+    fastify.post(
+        '/register-push-token',
+        {
+            // Define schema for registering push token
+            preHandler: [fastify.authenticate],
+        },
+        registerPushToken
+    );
+
 
 }

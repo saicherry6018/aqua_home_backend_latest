@@ -7,6 +7,8 @@ import {
   updateServiceRequestStatus,
   assignServiceAgent,
   scheduleServiceRequest,
+  getAllUnassignedServiceRequests,
+  assignServiceRequestToSelf,
 } from '../controllers/serviceRequests.controller';
 import {
   getAllServiceRequestsSchema,
@@ -154,6 +156,16 @@ export default async function (fastify: FastifyInstance) {
   fastify.post('/:id/refresh-payment-status', {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   },  (req,res)=>refreshInstallationPaymentStatus(req as any,res));
+
+  // Get all unassigned service requests (non-installation)
+  fastify.get('/unassigned', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+  }, (request, reply) => getAllUnassignedServiceRequests(request as any, reply as any));
+
+  // Assign service request to self
+  fastify.patch('/:id/assign-to-me', {
+    preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT])],
+  }, (request, reply) => assignServiceRequestToSelf(request as any, reply as any));
 
   // fastify.post('/:id/upload-payment-proof', {
   //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],

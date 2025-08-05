@@ -92,19 +92,57 @@ export async function checkRole(
     }>,
     reply: FastifyReply
   ) {
-  
+
     try {
-  
+
       console.log("request.query is ",request.query)
-  
+
       const { phoneNumber, role } = request.query;
-  
+
       const result = await authService.checkRole(phoneNumber, role)
       return reply.code(200).send(result)
-  
-  
+
+
     } catch (error) {
       handleError(error, request, reply)
   }
 
+}
+
+export async function updateMeController(
+  request: FastifyRequest<{ Body: { name?: string; alternativePhone?: string; city?: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const user = request.user;
+    const updateData = request.body;
+
+    const updatedUser = await userService.updateUser(user.userId, updateData);
+
+    reply.code(200).send({
+      message: 'Profile updated successfully',
+      user: updatedUser
+    });
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+export async function registerPushToken(
+  request: FastifyRequest<{ Body: { token: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const user = request.user;
+    const { token } = request.body;
+
+    const result = await userService.registerPushNotificationToken(user.userId, token);
+
+    reply.code(200).send({
+      message: result.message,
+      tokenUpdated: result.updated
+    });
+  } catch (error) {
+    handleError(error, request, reply);
+  }
 }

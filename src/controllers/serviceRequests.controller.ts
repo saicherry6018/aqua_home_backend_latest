@@ -373,3 +373,32 @@ export async function verifyInstallationPayment(
     handleError(error, request, reply);
   }
 }
+
+// Get all unassigned service requests
+export async function getAllUnassignedServiceRequests(
+  request: FastifyRequest,
+  reply: FastifyReply
+) {
+  try {
+    const user = request.user;
+    const unassignedRequests = await serviceRequestService.getAllUnassignedServiceRequests(user);
+    return reply.code(200).send(unassignedRequests);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+// Assign service request to self
+export async function assignServiceRequestToSelf(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const { id } = request.params;
+    const user = request.user;
+    const sr = await serviceRequestService.assignServiceRequestToSelf(id, user);
+    return reply.code(200).send({ message: 'Service request assigned to you', serviceRequest: sr });
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
