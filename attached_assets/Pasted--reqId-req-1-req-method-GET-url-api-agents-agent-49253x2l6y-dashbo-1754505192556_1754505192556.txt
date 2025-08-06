@@ -1,0 +1,34 @@
+  reqId: "req-1"
+    req: {
+      "method": "GET",
+      "url": "/api/agents/agent_49253x2l6y/dashboard",
+      "hostname": "192.168.1.7:3000",
+      "remoteAddress": "192.168.1.2",
+      "remotePort": 38380
+    }
+[18:32:48 UTC] ERROR: SQL_PARSE_ERROR: SQL string could not be parsed: near FROM, "None": syntax error at (1, 110)
+    reqId: "req-1"
+    err: {
+      "type": "LibsqlError",
+      "message": "SQL_PARSE_ERROR: SQL string could not be parsed: near FROM, \"None\": syntax error at (1, 110): SQL string could not be parsed: near FROM, \"None\": syntax error at (1, 110)",
+      "stack":
+          LibsqlError: SQL_PARSE_ERROR: SQL string could not be parsed: near FROM, "None": syntax error at (1, 110)
+              at mapHranaError (/Users/sthipp005/Documents/personal/aqua_backend_updated/node_modules/@libsql/client/lib-cjs/hrana.js:298:16)
+              at HttpTransaction.batch (/Users/sthipp005/Documents/personal/aqua_backend_updated/node_modules/@libsql/client/lib-cjs/hrana.js:133:19)
+              at processTicksAndRejections (node:internal/process/task_queues:105:5)
+              at LibSQLPreparedQuery.all (/Users/sthipp005/Documents/personal/aqua_backend_updated/node_modules/src/libsql/session.ts:191:16)
+              at /Users/sthipp005/Documents/personal/aqua_backend_updated/src/services/serviceagent.service.ts:318:35
+              at LibSQLSession.transaction (/Users/sthipp005/Documents/personal/aqua_backend_updated/node_modules/src/libsql/session.ts:109:19)
+              at getAgentDashboard (/Users/sthipp005/Documents/personal/aqua_backend_updated/src/services/serviceagent.service.ts:288:19)
+              at getAgentDashboardController (/Users/sthipp005/Documents/personal/aqua_backend_updated/src/controllers/serviceagent.controller.ts:138:27)
+              at Object.<anonymous> (/Users/sthipp005/Documents/personal/aqua_backend_updated/src/routes/serviceagent.route.ts:55:9)
+          caused by: 
+      "code": "SQL_PARSE_ERROR",
+      "name": "LibsqlError"
+    }
+[18:32:48 UTC] INFO: request completed
+    reqId: "req-1"
+    res: {
+      "statusCode": 500
+    }
+    responseTime: 63.34108299994841
