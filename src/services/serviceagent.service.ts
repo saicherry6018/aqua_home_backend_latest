@@ -324,14 +324,16 @@ export const getAgentDashboard = async (agentId: string) => {
                 sql`EXTRACT(YEAR FROM ${serviceRequests.createdAt}) = EXTRACT(YEAR FROM CURRENT_DATE)`
             ));
 
-        const totalRevenue = await tx
-            .select({ sum: sql<number>`COALESCE(SUM(${serviceRequests.paymentAmount}), 0)` })
-            .from(serviceRequests)
-            .where(and(
-                eq(serviceRequests.assignedToId, agentId),
-                eq(serviceRequests.status, 'COMPLETED'),
-                eq(serviceRequests.requiresPayment, true)
-            ));
+        // Calculate total revenue from completed payments
+    const revenueQuery = await tx.execute(sql`
+      SELECT COALESCE(SUM(amount), 0) as totalRevenue 
+      FROM payments 
+      WHERE status = 'completed' 
+      AND userId IN (
+        SELECT customerId FROM service_requests 
+        WHERE assignedToId = ${agentId}
+      )
+    `);
 
         return {
             totalRequests: totalRequests[0]?.count || 0,
@@ -339,7 +341,7 @@ export const getAgentDashboard = async (agentId: string) => {
             pendingRequests: pendingRequests[0]?.count || 0,
             inProgressRequests: inProgressRequests[0]?.count || 0,
             thisMonthRequests: thisMonthRequests[0]?.count || 0,
-            totalRevenue: totalRevenue[0]?.sum || 0,
+            totalRevenue: revenueQuery[0]?.totalRevenue || 0,
             completionRate: totalRequests[0]?.count > 0 
                 ? Math.round((completedRequests[0]?.count / totalRequests[0]?.count) * 100) 
                 : 0
