@@ -106,7 +106,7 @@ export const getAllServiceAgentsFromDB = async (filters?: {
             installationRequestsCount: sql<number>`COUNT(DISTINCT ${installationRequests.id})`,
             active: users.isActive,
             joined: users.createdAt,
-            agentId:franchiseAgents.agentId
+            agentId: franchiseAgents.agentId
         })
         .from(users)
         .leftJoin(franchiseAgents, and(...franchiseJoinConditions))
@@ -120,8 +120,8 @@ export const getAllServiceAgentsFromDB = async (filters?: {
 
     console.log('Service agents retrieved:', agents);
 
-    if(filters?.id){
-        return agents.filter(agent=>agent.agentId===filters?.id)
+    if (filters?.id) {
+        return agents.filter(agent => agent.agentId === filters?.id)
     }
     return agents;
 };
@@ -265,7 +265,7 @@ export const getAgentDashboard = async (agentId: string) => {
             description: serviceRequests.description,
             type: serviceRequests.type,
             status: serviceRequests.status,
-            priority: serviceRequests.priority,
+
             createdAt: serviceRequests.createdAt,
             updatedAt: serviceRequests.updatedAt,
             scheduledDate: serviceRequests.scheduledDate,
@@ -273,8 +273,8 @@ export const getAgentDashboard = async (agentId: string) => {
             customerPhone: users.phone,
             franchiseName: franchises.name,
             franchiseId: franchises.id,
-            requiresPayment: serviceRequests.requiresPayment,
-            paymentAmount: serviceRequests.paymentAmount,
+            requiresPayment: serviceRequests.requirePayment,
+
             beforeImages: serviceRequests.beforeImages,
             afterImages: serviceRequests.afterImages
         })
@@ -330,9 +330,9 @@ export const getAgentDashboard = async (agentId: string) => {
             .where(and(
                 eq(serviceRequests.assignedToId, agentId),
                 eq(serviceRequests.status, 'COMPLETED'),
-                eq(serviceRequests.requiresPayment, true)
+                eq(serviceRequests.requirePayment, true)
             ));
-
+        // const totalRevenue=[[0]]
         return {
             totalRequests: totalRequests[0]?.count || 0,
             completedRequests: completedRequests[0]?.count || 0,
@@ -340,8 +340,8 @@ export const getAgentDashboard = async (agentId: string) => {
             inProgressRequests: inProgressRequests[0]?.count || 0,
             thisMonthRequests: thisMonthRequests[0]?.count || 0,
             totalRevenue: totalRevenue[0]?.sum || 0,
-            completionRate: totalRequests[0]?.count > 0 
-                ? Math.round((completedRequests[0]?.count / totalRequests[0]?.count) * 100) 
+            completionRate: totalRequests[0]?.count > 0
+                ? Math.round((completedRequests[0]?.count / totalRequests[0]?.count) * 100)
                 : 0
         };
     });
