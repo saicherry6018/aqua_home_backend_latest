@@ -389,7 +389,7 @@ export async function updateInstallationRequestStatus(
         updateData.assignedTechnicianId = data.assignedTechnicianId;
         updateData.scheduledDate = data.scheduledDate;
 
-        const serviceRequest = await fastify.db.query.servicerequests.findFirst({
+        const serviceRequest = await fastify.db.query.serviceRequests.findFirst({
             where: eq(serviceRequests.installationRequestId, requestId)
         })
 
@@ -413,9 +413,9 @@ export async function updateInstallationRequestStatus(
     // Update request
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
-        .where(eq(installationRequests.id, requestId)).returning();
+    .where(eq(installationRequests.id, requestId)).returning();
 
-    const serviceRequest = await fastify.db.query.servicerequests.findFirst({
+    const serviceRequest = await fastify.db.query.serviceRequests.findFirst({
         where: eq(serviceRequests.installationRequestId, requestId)
     })
 
@@ -449,10 +449,11 @@ export async function updateInstallationRequestStatus(
         })
     });
 
-    // Send push notification on status update (e.g., scheduled, cancelled, rejected)
-    if (createdRequestWithDetails) { // Assuming createdRequestWithDetails is available or fetch it again
-        await sendInstallationRequestNotifications(updatedRequest, data.status, user);
-    }
+
+if(data.status === InstallationRequestStatus.CANCELLED){
+    await sendInstallationRequestNotifications(updatedRequest, 'cancelled', user);
+}
+
 
     return {
         message: `Installation request ${data.status.toLowerCase()} successfully`,
@@ -1394,6 +1395,8 @@ async function sendInstallationRequestNotifications(
     let targetUserIds: string[] = [];
     let targetUserRoles: UserRole[] = [];
 
+    console.log('called sendnotifivstions in instalaltion requests ',action)
+
     switch (action) {
         case 'created':
             title = 'New Installation Request';
@@ -1448,14 +1451,17 @@ async function sendInstallationRequestNotifications(
     // Fetch users based on roles and explicitly added IDs
     let usersToNotify: any[] = [];
 
+    console.log('targetUserRoles ',targetUserRoles)
+
     if (targetUserRoles.length > 0) {
         const roleBasedUsers = await db.query.users.findMany({
             where: or(...targetUserRoles.map(role => eq(users.role, role))),
             columns: { id: true, pushNotificationToken: true }
         });
+        console.log('roleBasedUsers ',roleBasedUsers)
         usersToNotify.push(...roleBasedUsers);
     }
-
+    console.log('usersToNotify ',usersToNotify)
     if (targetUserIds.length > 0) {
         const specificUsers = await db.query.users.findMany({
             where: or(...targetUserIds.map(id => eq(users.id, id))),
@@ -1471,7 +1477,8 @@ async function sendInstallationRequestNotifications(
     }
 
     // Filter out users who triggered the action and those without tokens
-    const finalUsersToNotify = usersToNotify.filter(user => user.id !== currentUser.userId && user.pushNotificationToken);
+    const finalUsersToNotify = usersToNotify.filter(user =>  user.pushNotificationToken);
+
 
     if (finalUsersToNotify.length > 0) {
         await notificationService.sendPushNotification({

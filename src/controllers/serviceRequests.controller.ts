@@ -150,6 +150,9 @@ export async function createInstallationServiceRequest(
     const user = request.user;
     const { installationRequestId, assignedToId, scheduledDate, description } = request.body;
 
+
+    console.log('data in crete installtion requests is ',request.body)
+
     // Only admin or franchise owner can create installation service requests
     if (![UserRole.ADMIN, UserRole.FRANCHISE_OWNER].includes(user.role)) {
       throw forbidden('You do not have permission to create installation service requests');
@@ -161,6 +164,8 @@ export async function createInstallationServiceRequest(
       scheduledDate,
       description: description || "Installation service request"
     }, user);
+
+    console.log('sr in createInstallationServiceRequest after ',sr)
 
     // Send notification to the assigned agent if available
     if (sr.assignedToId) {
@@ -251,14 +256,14 @@ export async function updateServiceRequestStatus(
     if (result && result.assignedToId) {
       const assignedAgent = await serviceRequestService.getUserById(result.assignedToId);
       if (assignedAgent && assignedAgent.pushNotificationToken) {
-        if (status === 'COMPLETED') {
+        if (fields.status === 'COMPLETED') {
           await notificationService.sendSinglePushNotification({
             pushToken: assignedAgent.pushNotificationToken,
             title: 'Service Request Completed',
             message: `Service request #${id} has been completed.`,
             data: { serviceRequestId: id, type: 'COMPLETED', screen: `/service-requests/${id}` },
           });
-        } else if (status === 'CANCELLED') {
+        } else if (fields.status === 'CANCELLED') {
           await notificationService.sendSinglePushNotification({
             pushToken: assignedAgent.pushNotificationToken,
             title: 'Service Request Cancelled',
@@ -274,6 +279,8 @@ export async function updateServiceRequestStatus(
       data: result,
     });
   } catch (error: any) {
+
+    console.log('error is ',error)
     reply.code(error.statusCode || 500).send({
       success: false,
       message: error.message,
