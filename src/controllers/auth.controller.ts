@@ -147,3 +147,19 @@ export async function registerPushToken(
     handleError(error, request, reply);
   }
 }
+
+export async function getUserDetails(
+  request: FastifyRequest<{ Params: { userId: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const { userId } = request.params;
+    const requestingUser = request.user;
+
+    const userDetails = await userService.getUserDetails(userId, requestingUser);
+
+    return reply.code(200).send(userDetails);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}

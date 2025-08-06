@@ -7,7 +7,8 @@ import {
     getFranchiseAgentsController,
     addServiceAgent,
     getAllServiceAgents,
-    updateServiceAgent
+    updateServiceAgent,
+    getAgentDashboardController
 } from "../controllers/serviceagent.controller";
 import {
     assignAgentSchema,
@@ -16,7 +17,8 @@ import {
     getAgentFranchisesSchema,
     getFranchiseAgentsSchema,
     addServiceAgentSchema,
-    getServcieAgentsSchema
+    getServcieAgentsSchema,
+    getAgentDashboardSchema
 } from "../schemas/serviceagent.schema";
 
 export default async function (fastify: FastifyInstance) {
@@ -47,4 +49,8 @@ export default async function (fastify: FastifyInstance) {
     fastify.get("/", { schema: getServcieAgentsSchema }, async (request, reply) => await getAllServiceAgents(request, reply))
 
     fastify.patch("/:id", { schema: getServcieAgentsSchema }, async (request, reply) => await updateServiceAgent(request, reply))
+
+    // Get agent dashboard with details and statistics
+    fastify.get("/:agentId/dashboard", { schema: getAgentDashboardSchema }, async (request, reply) => 
+        await getAgentDashboardController(request, reply))
 }

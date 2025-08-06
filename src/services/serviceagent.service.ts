@@ -231,3 +231,152 @@ export const serviceAgentUpdateInDB = async (id: string, data: {
 
     return updatedAgent;
 };
+
+export const getAgentDashboard = async (agentId: string) => {
+    const db = getFastifyInstance().db;
+
+    // Get agent details
+    const agent = await db.query.users.findFirst({
+        where: and(
+            eq(users.id, agentId),
+            eq(users.role, UserRole.SERVICE_AGENT)
+        )
+    });
+
+    if (!agent) {
+        throw notFound("Service agent not found");
+    }
+
+    // Get franchise assignments
+    const franchiseAssignments = await db.query.franchiseAgents.findMany({
+        where: and(
+            eq(franchiseAgents.agentId, agentId),
+            eq(franchiseAgents.isActive, true)
+        ),
+        with: {
+            franchise: true
+        }
+    });
+
+    // Get service requests with detailed information
+    const serviceRequestsQuery = await db
+        .select({
+            id: serviceRequests.id,
+            description: serviceRequests.description,
+            type: serviceRequests.type,
+            status: serviceRequests.status,
+            priority: serviceRequests.priority,
+            createdAt: serviceRequests.createdAt,
+            updatedAt: serviceRequests.updatedAt,
+            scheduledDate: serviceRequests.scheduledDate,
+            customerName: users.name,
+            customerPhone: users.phone,
+            franchiseName: franchises.name,
+            franchiseId: franchises.id,
+            requiresPayment: serviceRequests.requiresPayment,
+            paymentAmount: serviceRequests.paymentAmount,
+            beforeImages: serviceRequests.beforeImages,
+            afterImages: serviceRequests.afterImages
+        })
+        .from(serviceRequests)
+        .leftJoin(users, eq(serviceRequests.customerId, users.id))
+        .leftJoin(franchises, eq(serviceRequests.franchiseId, franchises.id))
+        .where(eq(serviceRequests.assignedToId, agentId))
+        .orderBy(sql`${serviceRequests.createdAt} DESC`);
+
+    // Calculate statistics
+    const stats = await db.transaction(async (tx) => {
+        const totalRequests = await tx
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(serviceRequests)
+            .where(eq(serviceRequests.assignedToId, agentId));
+
+        const completedRequests = await tx
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(serviceRequests)
+            .where(and(
+                eq(serviceRequests.assignedToId, agentId),
+                eq(serviceRequests.status, 'COMPLETED')
+            ));
+
+        const pendingRequests = await tx
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(serviceRequests)
+            .where(and(
+                eq(serviceRequests.assignedToId, agentId),
+                eq(serviceRequests.status, 'ASSIGNED')
+            ));
+
+        const inProgressRequests = await tx
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(serviceRequests)
+            .where(and(
+                eq(serviceRequests.assignedToId, agentId),
+                eq(serviceRequests.status, 'IN_PROGRESS')
+            ));
+
+        const thisMonthRequests = await tx
+            .select({ count: sql<number>`COUNT(*)` })
+            .from(serviceRequests)
+            .where(and(
+                eq(serviceRequests.assignedToId, agentId),
+                sql`EXTRACT(MONTH FROM ${serviceRequests.createdAt}) = EXTRACT(MONTH FROM CURRENT_DATE)`,
+                sql`EXTRACT(YEAR FROM ${serviceRequests.createdAt}) = EXTRACT(YEAR FROM CURRENT_DATE)`
+            ));
+
+        const totalRevenue = await tx
+            .select({ sum: sql<number>`COALESCE(SUM(${serviceRequests.paymentAmount}), 0)` })
+            .from(serviceRequests)
+            .where(and(
+                eq(serviceRequests.assignedToId, agentId),
+                eq(serviceRequests.status, 'COMPLETED'),
+                eq(serviceRequests.requiresPayment, true)
+            ));
+
+        return {
+            totalRequests: totalRequests[0]?.count || 0,
+            completedRequests: completedRequests[0]?.count || 0,
+            pendingRequests: pendingRequests[0]?.count || 0,
+            inProgressRequests: inProgressRequests[0]?.count || 0,
+            thisMonthRequests: thisMonthRequests[0]?.count || 0,
+            totalRevenue: totalRevenue[0]?.sum || 0,
+            completionRate: totalRequests[0]?.count > 0 
+                ? Math.round((completedRequests[0]?.count / totalRequests[0]?.count) * 100) 
+                : 0
+        };
+    });
+
+    // Group service requests by status for better organization
+    const serviceRequestsByStatus = {
+        PENDING: serviceRequestsQuery.filter(sr => sr.status === 'PENDING'),
+        ASSIGNED: serviceRequestsQuery.filter(sr => sr.status === 'ASSIGNED'),
+        IN_PROGRESS: serviceRequestsQuery.filter(sr => sr.status === 'IN_PROGRESS'),
+        COMPLETED: serviceRequestsQuery.filter(sr => sr.status === 'COMPLETED'),
+        CANCELLED: serviceRequestsQuery.filter(sr => sr.status === 'CANCELLED')
+    };
+
+    return {
+        agent: {
+            id: agent.id,
+            name: agent.name,
+            phone: agent.phone,
+            alternativePhone: agent.alternativePhone,
+            email: agent.email,
+            isActive: agent.isActive,
+            joinedDate: agent.createdAt
+        },
+        franchiseAssignments: franchiseAssignments.map(fa => ({
+            franchiseId: fa.franchiseId,
+            franchiseName: fa.franchise?.name,
+            franchiseCity: fa.franchise?.city,
+            isPrimary: fa.isPrimary,
+            assignedDate: fa.createdAt
+        })),
+        statistics: stats,
+        serviceRequests: {
+            all: serviceRequestsQuery,
+            byStatus: serviceRequestsByStatus,
+            recent: serviceRequestsQuery.slice(0, 10) // Last 10 requests
+        }
+    };
+};

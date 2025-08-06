@@ -11,7 +11,7 @@ import {
     getFranchiseAgents
 } from "../services/franchise-agent.service";
 import { serviceAgentAddBody } from "../schemas/serviceagent.schema";
-import { getAllServiceAgentsFromDB, serviceAgentAddToDB, serviceAgentUpdateInDB } from "../services/serviceagent.service";
+import { getAllServiceAgentsFromDB, serviceAgentAddToDB, serviceAgentUpdateInDB, getAgentDashboard } from "../services/serviceagent.service";
 
 
 
@@ -127,6 +127,20 @@ export const getFranchiseAgentsController = async (request: FastifyRequest, repl
         const agents = await getFranchiseAgents(franchiseId);
         console.log('avilable agents are ',agents)
         return reply.code(200).send(agents);
+    } catch (error) {
+        return handleError(error, request, reply);
+    }
+};
+
+export const getAgentDashboardController = async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+        const { agentId } = request.params as { agentId: string };
+        const dashboard = await getAgentDashboard(agentId);
+        
+        return reply.code(200).send({
+            success: true,
+            data: dashboard
+        });
     } catch (error) {
         return handleError(error, request, reply);
     }

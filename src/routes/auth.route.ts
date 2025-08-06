@@ -1,6 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { checkRoleSchema, loginSchema, meSchema, onboardUserSchema, refreshTokenSchema } from "../schemas/auth.schema";
-import { login, refreshToken,onboard,me, checkRole, registerPushToken } from "../controllers/auth.controller";
+import { login, refreshToken,onboard,me, checkRole, registerPushToken, getUserDetails } from "../controllers/auth.controller";
+import { UserRole } from "@prisma/client";
 
 
 
@@ -66,6 +67,24 @@ export default async function (fastify: FastifyInstance) {
             }
         },
         registerPushToken
+    );
+
+    // Get user details (customers, franchise owners, and admins)
+    fastify.get(
+        '/users/:userId/details',
+        {
+            preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.CUSTOMER, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
+            schema: {
+                params: {
+                    type: 'object',
+                    required: ['userId'],
+                    properties: {
+                        userId: { type: 'string' }
+                    }
+                }
+            }
+        },
+        getUserDetails
     );
 
 
