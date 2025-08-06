@@ -137,7 +137,7 @@ export const getFranchiseAgentsSchema = {
     security: [{ bearerAuth: [] }],
 };
 export const addServiceAgentSchema = {
-    
+
     body: zodToJsonSchema(
         serviceAgentAddBody
     ),
@@ -187,3 +187,75 @@ export const getServcieAgentsSchema = {
 
 }
 
+export const getAgentDashboardSchema = {
+    params: zodToJsonSchema(z.object({
+        agentId: z.string().min(1, "Agent ID is required")
+    })),
+    response: {
+        200: zodToJsonSchema(z.object({
+            success: z.boolean(),
+            data: z.object({
+                agent: z.object({
+                    id: z.string(),
+                    name: z.string(),
+                    phone: z.string(),
+                    alternativePhone: z.string().nullable(),
+                    email: z.string().nullable(),
+                    isActive: z.boolean(),
+                    joinedDate: z.string()
+                }),
+                franchiseAssignments: z.array(z.object({
+                    franchiseId: z.string(),
+                    franchiseName: z.string().nullable(),
+                    franchiseCity: z.string().nullable(),
+                    isPrimary: z.boolean(),
+                    assignedDate: z.string()
+                })),
+                statistics: z.object({
+                    totalRequests: z.number(),
+                    completedRequests: z.number(),
+                    pendingRequests: z.number(),
+                    inProgressRequests: z.number(),
+                    thisMonthRequests: z.number(),
+                    totalRevenue: z.number(),
+                    completionRate: z.number()
+                }),
+                serviceRequests: z.object({
+                    all: z.array(z.object({
+                        id: z.string(),
+                        description: z.string(),
+                        type: z.string(),
+                        status: z.string(),
+                        priority: z.string().nullable(),
+                        createdAt: z.string(),
+                        updatedAt: z.string(),
+                        scheduledDate: z.string().nullable(),
+                        customerName: z.string().nullable(),
+                        customerPhone: z.string().nullable(),
+                        franchiseName: z.string().nullable(),
+                        franchiseId: z.string(),
+                        requiresPayment: z.boolean(),
+                        paymentAmount: z.number().nullable(),
+                        beforeImages: z.array(z.string()).nullable(),
+                        afterImages: z.array(z.string()).nullable()
+                    })),
+                    byStatus: z.object({
+                        PENDING: z.array(z.any()),
+                        ASSIGNED: z.array(z.any()),
+                        IN_PROGRESS: z.array(z.any()),
+                        COMPLETED: z.array(z.any()),
+                        CANCELLED: z.array(z.any())
+                    }),
+                    recent: z.array(z.any())
+                })
+            })
+        })),
+        400: zodToJsonSchema(ErrorResponseSchema),
+        403: zodToJsonSchema(ErrorResponseSchema),
+        404: zodToJsonSchema(ErrorResponseSchema),
+    },
+    tags: ["Service Agents"],
+    summary: "Get agent dashboard with details and statistics",
+    description: "Get comprehensive dashboard for a service agent including their details, statistics, and service requests",
+    security: [{ bearerAuth: [] }],
+};
