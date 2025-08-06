@@ -66,7 +66,7 @@ export default async function (fastify: FastifyInstance) {
               }
             }
         },
-        registerPushToken
+        (req,res)=>registerPushToken(req as any,res)
     );
 
     // Get user details (customers, franchise owners, and admins)

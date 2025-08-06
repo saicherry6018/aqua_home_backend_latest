@@ -252,7 +252,7 @@ export async function createServiceRequest(data: any, user: any) {
 
   // Send push notifications for non-installation service requests
   const createdServiceRequest = await getServiceRequestById(id);
-  if (createdServiceRequest && !createdServiceRequest.installationRequestId) {
+  if (createdServiceRequest && createdServiceRequest.installationRequestId) {
     await sendServiceRequestNotifications(createdServiceRequest, 'created', user);
   }
 
@@ -388,7 +388,7 @@ export async function createInstallationServiceRequest(data: {
 
   // TODO: Send notification to customer and assigned agent (if any)
 
-  return await getServiceRequestById(id);
+  return await getServiceRequestById(existingServiceRequest ? existingServiceRequest.id : id);
 }
 
 // Update service request status
@@ -401,7 +401,7 @@ export async function updateServiceRequestStatus(
     completedAt?: string;
     scheduledDate?: string;
     beforeImages?: string[];
-    afterImages?:string[];
+    afterImages?: string[];
   }
 ) {
   const fastify = getFastifyInstance();
@@ -879,6 +879,9 @@ export async function scheduleServiceRequest(id: string, scheduledDate: string, 
     updatedAt: new Date().toISOString(),
   }).where(eq(serviceRequests.id, id));
 
+  console.log('schedule date change ', oldStatus)
+
+
   // Log action history
   await logActionHistory({
     serviceRequestId: id,
@@ -912,7 +915,7 @@ export async function getAllUnassignedServiceRequests(user: any) {
     const agentFranchises = await fastify.db.query.franchiseAgents.findMany({
       where: eq(franchiseAgents.agentId, user.userId)
     });
-    
+
     if (agentFranchises.length > 0) {
       const franchiseIds = agentFranchises.map(fa => fa.franchiseId);
       whereConditions.push(inArray(serviceRequests.franchiseId, franchiseIds));
@@ -975,7 +978,7 @@ export async function assignServiceRequestToSelf(id: string, user: any) {
         eq(franchiseAgents.isActive, true)
       )
     });
-    
+
     if (!agentFranchise) {
       throw forbidden('You are not authorized to work in this franchise area');
     }
@@ -1009,12 +1012,19 @@ export async function assignServiceRequestToSelf(id: string, user: any) {
 // Push notification helper function
 async function sendServiceRequestNotifications(serviceRequest: any, action: string, user: any) {
   const fastify = getFastifyInstance();
-  
+
   try {
     const notificationData = {
       referenceId: serviceRequest.id,
       referenceType: 'service_request'
     };
+
+    const admins = await fastify.db.query.users.findMany({
+      where: and(
+        eq(users.role, UserRole.ADMIN),
+        eq(users.isActive, true)
+      )
+    });
 
     switch (action) {
       case 'created':
@@ -1034,13 +1044,7 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
           );
         }
 
-        // Notify admins
-        const admins = await fastify.db.query.users.findMany({
-          where: and(
-            eq(users.role, UserRole.ADMIN),
-            eq(users.isActive, true)
-          )
-        });
+
 
         for (const admin of admins) {
           if (admin.pushNotificationToken) {
@@ -1054,7 +1058,7 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
         }
 
         // Notify service agents in franchise
-        const franchiseAgents = await fastify.db.query.franchiseAgents.findMany({
+        const franchiseAgentsReturned = await fastify.db.query.franchiseAgents.findMany({
           where: and(
             eq(franchiseAgents.franchiseId, serviceRequest.franchiseId),
             eq(franchiseAgents.isActive, true)
@@ -1062,7 +1066,7 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
           with: { agent: true }
         });
 
-        for (const fa of franchiseAgents) {
+        for (const fa of franchiseAgentsReturned) {
           if (fa.agent?.pushNotificationToken) {
             await sendPushNotification(
               fa.agent.pushNotificationToken,
@@ -1079,6 +1083,17 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
         // Notify customer, assigned agent, franchise owner, and admins
         const recipients = [];
 
+        for (const admin of admins) {
+          if (admin.pushNotificationToken) {
+            recipients.push({
+              token: serviceRequest.customer.pushNotificationToken,
+              title: `Service Request ${action === 'completed' ? 'Completed' : 'Scheduled'}`,
+              message: ` ${serviceRequest.type} request has been ${action === 'completed' ? 'completed' : 'scheduled'}`
+            });
+          }
+        }
+
+
         // Customer
         if (serviceRequest.customer?.pushNotificationToken) {
           recipients.push({
@@ -1087,6 +1102,8 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
             message: `Your ${serviceRequest.type} request has been ${action === 'completed' ? 'completed' : 'scheduled'}`
           });
         }
+
+
 
         // Assigned agent
         if (serviceRequest.assignedAgent?.pushNotificationToken) {
