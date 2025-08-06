@@ -1188,7 +1188,14 @@ export async function refreshPaymentStatus(serviceRequestId: string, user: any) 
             updatedAt: new Date().toISOString()
           }).where(eq(installationRequests.id, serviceRequest.installationRequestId));
 
-          // Log action history
+          // Update service request status to COMPLETED
+          await tx.update(serviceRequests).set({
+            status: ServiceRequestStatus.COMPLETED,
+            completedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }).where(eq(serviceRequests.id, serviceRequestId));
+
+          // Log action history for payment
           await logActionHistoryInTransaction(tx, {
             paymentId: pendingPayment.id,
             installationRequestId: serviceRequest.installationRequestId,
@@ -1199,6 +1206,18 @@ export async function refreshPaymentStatus(serviceRequestId: string, user: any) 
             performedByRole: user.role,
             comment: 'Payment status refreshed from Razorpay',
             metadata: { razorpayOrderId: pendingPayment.razorpayOrderId }
+          });
+
+          // Log action history for service request completion
+          await logActionHistoryInTransaction(tx, {
+            serviceRequestId: serviceRequestId,
+            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+            fromStatus: ServiceRequestStatus.PAYMENT_PENDING,
+            toStatus: ServiceRequestStatus.COMPLETED,
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: 'Service request completed after payment verification',
+            metadata: { paymentId: pendingPayment.id }
           });
 
           paymentResult = {
