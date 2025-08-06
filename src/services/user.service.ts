@@ -1,8 +1,9 @@
 import { eq, and, inArray } from "drizzle-orm";
-import { User, users } from "../models/schema";
+import { franchises, installationRequests, subscriptions, User, users } from "../models/schema";
 import { getFastifyInstance } from "../shared/fastify-instance";
 import { notFound, forbidden } from "../utils/errors";
-import { UserRole } from "../models/enums"; // Assuming UserRole enum is defined here
+import { UserRole } from "../types";
+
 
 // Assume other models like franchises, subscriptions, installationRequests are also imported and available.
 // For this example, I'll assume their presence and basic structure for demonstration.
@@ -17,18 +18,7 @@ import { UserRole } from "../models/enums"; // Assuming UserRole enum is defined
 
 // Mock imports for demonstration if not present in the original file
 // These would typically be imported from your schema definitions
-const franchises = {
-    id: 'franchiseId',
-    ownerId: 'ownerId'
-};
-const subscriptions = {
-    customerId: 'customerId',
-    franchiseId: 'franchiseId'
-};
-const installationRequests = {
-    customerId: 'customerId',
-    franchiseId: 'franchiseId'
-};
+
 
 
 export async function onboardUser(

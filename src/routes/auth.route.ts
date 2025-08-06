@@ -1,7 +1,7 @@
 import { FastifyInstance } from "fastify";
 import { checkRoleSchema, loginSchema, meSchema, onboardUserSchema, refreshTokenSchema } from "../schemas/auth.schema";
 import { login, refreshToken,onboard,me, checkRole, registerPushToken, getUserDetails } from "../controllers/auth.controller";
-import { UserRole } from "@prisma/client";
+import { UserRole } from "../types";
 
 
 
@@ -84,7 +84,7 @@ export default async function (fastify: FastifyInstance) {
                 }
             }
         },
-        getUserDetails
+        (req,res)=>getUserDetails(req as any,res)
     );
 
 
