@@ -2,7 +2,6 @@ import { integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core
 import { InstallationRequestStatus, RentalStatus, ServiceRequestStatus, ServiceRequestType, UserRole, PaymentStatus, PaymentType, ActionType } from "../types";
 import { InferSelectModel, relations, sql } from "drizzle-orm";
 import { boolean } from "drizzle-orm/mysql-core";
-import { number } from "zod";
 
 export const users = sqliteTable(
     "users",
@@ -14,6 +13,7 @@ export const users = sqliteTable(
         city: text('city'),
         alternativePhone: text("alternative_phone"),
         firebaseUid: text("firebase_uid"),
+        pushNotificationToken: text("push_notification_token"),
         hasOnboarded: integer("has_onboarded", { mode: "boolean" }).notNull().default(false),
         isActive: integer("is_active", { mode: "boolean" }).notNull().default(true),
         createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

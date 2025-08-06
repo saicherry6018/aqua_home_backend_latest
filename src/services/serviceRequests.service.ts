@@ -1,6 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
-import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments } from '../models/schema';
+import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments, franchiseAgents } from '../models/schema';
 import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus, PaymentStatus } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
@@ -250,9 +250,13 @@ export async function createServiceRequest(data: any, user: any) {
     { type: data.type, requiresPayment: data.requiresPayment }
   ));
 
-  // TODO: Send notification to admin/franchise owner
+  // Send push notifications for non-installation service requests
+  const createdServiceRequest = await getServiceRequestById(id);
+  if (createdServiceRequest && !createdServiceRequest.installationRequestId) {
+    await sendServiceRequestNotifications(createdServiceRequest, 'created', user);
+  }
 
-  return await getServiceRequestById(id);
+  return createdServiceRequest;
 }
 
 // Create installation service request (for franchise_owner/admin)
@@ -810,8 +814,254 @@ export async function scheduleServiceRequest(id: string, scheduledDate: string, 
     metadata: { scheduledDate: scheduledDateTime.toISOString() }
   });
 
-  // TODO: Send notification to customer
-  // TODO: If there's an assigned agent, notify them too
+  // Send push notifications
+  await sendServiceRequestNotifications(sr, 'scheduled', user);
 
   return await getServiceRequestById(id);
+}
+
+// Get all unassigned service requests (non-installation)
+export async function getAllUnassignedServiceRequests(user: any) {
+  const fastify = getFastifyInstance();
+  let whereConditions: any[] = [
+    eq(serviceRequests.assignedToId, null), // Unassigned
+    eq(serviceRequests.installationRequestId, null), // Not installation type
+    inArray(serviceRequests.status, [ServiceRequestStatus.CREATED, ServiceRequestStatus.ASSIGNED])
+  ];
+
+  // For service agents, only show requests from their franchise
+  if (user.role === UserRole.SERVICE_AGENT) {
+    // Get agent's franchise assignments
+    const agentFranchises = await fastify.db.query.franchiseAgents.findMany({
+      where: eq(franchiseAgents.agentId, user.userId)
+    });
+    
+    if (agentFranchises.length > 0) {
+      const franchiseIds = agentFranchises.map(fa => fa.franchiseId);
+      whereConditions.push(inArray(serviceRequests.franchiseId, franchiseIds));
+    } else {
+      return []; // Agent not assigned to any franchise
+    }
+  } else if (user.role === UserRole.FRANCHISE_OWNER) {
+    const ownedFranchise = await fastify.db.query.franchises.findFirst({
+      where: eq(franchises.ownerId, user.userId)
+    });
+    if (!ownedFranchise) return [];
+    whereConditions.push(eq(serviceRequests.franchiseId, ownedFranchise.id));
+  }
+
+  const results = await fastify.db.query.serviceRequests.findMany({
+    where: and(...whereConditions),
+    with: {
+      customer: true,
+      product: true,
+    },
+    orderBy: (serviceRequests, { desc }) => [desc(serviceRequests.createdAt)],
+  });
+
+  // Format response according to requirements
+  return results.map(sr => ({
+    id: sr.id,
+    description: sr.description,
+    type: sr.type,
+    priority: 'normal', // You might want to add priority to schema
+    status: 'open',
+    createdAt: sr.createdAt,
+    customerName: sr.customer?.name || 'Unknown',
+    customerAddress: sr.customer?.city || 'Not provided',
+    customerPhone: sr.customer?.phone || 'Not provided',
+  }));
+}
+
+// Assign service request to self (for service agents)
+export async function assignServiceRequestToSelf(id: string, user: any) {
+  const fastify = getFastifyInstance();
+  const sr = await getServiceRequestById(id);
+  if (!sr) throw notFound('Service Request');
+
+  // Check if request is unassigned
+  if (sr.assignedToId) {
+    throw badRequest('Service request is already assigned');
+  }
+
+  // Check if it's not an installation type
+  if (sr.installationRequestId) {
+    throw badRequest('Installation service requests cannot be self-assigned');
+  }
+
+  // For service agents, check if they can work in this franchise
+  if (user.role === UserRole.SERVICE_AGENT) {
+    const agentFranchise = await fastify.db.query.franchiseAgents.findFirst({
+      where: and(
+        eq(franchiseAgents.agentId, user.userId),
+        eq(franchiseAgents.franchiseId, sr.franchiseId),
+        eq(franchiseAgents.isActive, true)
+      )
+    });
+    
+    if (!agentFranchise) {
+      throw forbidden('You are not authorized to work in this franchise area');
+    }
+  }
+
+  const oldStatus = sr.status;
+  await fastify.db.update(serviceRequests).set({
+    assignedToId: user.userId,
+    status: ServiceRequestStatus.ASSIGNED,
+    updatedAt: new Date().toISOString(),
+  }).where(eq(serviceRequests.id, id));
+
+  // Log action history
+  await logActionHistory({
+    serviceRequestId: id,
+    actionType: ActionType.SERVICE_REQUEST_ASSIGNED,
+    fromStatus: oldStatus,
+    toStatus: ServiceRequestStatus.ASSIGNED,
+    performedBy: user.userId,
+    performedByRole: user.role,
+    comment: `Service agent self-assigned`,
+    metadata: { assignedToId: user.userId, selfAssigned: true }
+  });
+
+  // Send push notifications for reassignment
+  await sendServiceRequestNotifications(sr, 'assigned', user);
+
+  return await getServiceRequestById(id);
+}
+
+// Push notification helper function
+async function sendServiceRequestNotifications(serviceRequest: any, action: string, user: any) {
+  const fastify = getFastifyInstance();
+  
+  try {
+    const notificationData = {
+      referenceId: serviceRequest.id,
+      referenceType: 'service_request'
+    };
+
+    switch (action) {
+      case 'created':
+        // Notify franchise owner, admins, and service agents in franchise
+        const franchise = await fastify.db.query.franchises.findFirst({
+          where: eq(franchises.id, serviceRequest.franchiseId),
+          with: { owner: true }
+        });
+
+        // Notify franchise owner
+        if (franchise?.owner?.pushNotificationToken) {
+          await sendPushNotification(
+            franchise.owner.pushNotificationToken,
+            'New Service Request',
+            `New ${serviceRequest.type} request from ${serviceRequest.customer?.name || 'customer'}`,
+            notificationData
+          );
+        }
+
+        // Notify admins
+        const admins = await fastify.db.query.users.findMany({
+          where: and(
+            eq(users.role, UserRole.ADMIN),
+            eq(users.isActive, true)
+          )
+        });
+
+        for (const admin of admins) {
+          if (admin.pushNotificationToken) {
+            await sendPushNotification(
+              admin.pushNotificationToken,
+              'New Service Request',
+              `New ${serviceRequest.type} request in ${franchise?.name || 'franchise'}`,
+              notificationData
+            );
+          }
+        }
+
+        // Notify service agents in franchise
+        const franchiseAgents = await fastify.db.query.franchiseAgents.findMany({
+          where: and(
+            eq(franchiseAgents.franchiseId, serviceRequest.franchiseId),
+            eq(franchiseAgents.isActive, true)
+          ),
+          with: { agent: true }
+        });
+
+        for (const fa of franchiseAgents) {
+          if (fa.agent?.pushNotificationToken) {
+            await sendPushNotification(
+              fa.agent.pushNotificationToken,
+              'New Service Request Available',
+              `New ${serviceRequest.type} request available for assignment`,
+              notificationData
+            );
+          }
+        }
+        break;
+
+      case 'completed':
+      case 'scheduled':
+        // Notify customer, assigned agent, franchise owner, and admins
+        const recipients = [];
+
+        // Customer
+        if (serviceRequest.customer?.pushNotificationToken) {
+          recipients.push({
+            token: serviceRequest.customer.pushNotificationToken,
+            title: `Service Request ${action === 'completed' ? 'Completed' : 'Scheduled'}`,
+            message: `Your ${serviceRequest.type} request has been ${action === 'completed' ? 'completed' : 'scheduled'}`
+          });
+        }
+
+        // Assigned agent
+        if (serviceRequest.assignedAgent?.pushNotificationToken) {
+          recipients.push({
+            token: serviceRequest.assignedAgent.pushNotificationToken,
+            title: `Service Request ${action === 'completed' ? 'Completed' : 'Scheduled'}`,
+            message: `Service request ${serviceRequest.id} has been ${action === 'completed' ? 'completed' : 'scheduled'}`
+          });
+        }
+
+        // Send notifications
+        for (const recipient of recipients) {
+          await sendPushNotification(recipient.token, recipient.title, recipient.message, notificationData);
+        }
+        break;
+
+      case 'assigned':
+        // Notify the assigned agent
+        const assignedAgent = await fastify.db.query.users.findFirst({
+          where: eq(users.id, serviceRequest.assignedToId)
+        });
+
+        if (assignedAgent?.pushNotificationToken) {
+          await sendPushNotification(
+            assignedAgent.pushNotificationToken,
+            'Service Request Assigned',
+            `You have been assigned a ${serviceRequest.type} service request`,
+            notificationData
+          );
+        }
+        break;
+    }
+  } catch (error) {
+    console.error('Error sending push notifications:', error);
+  }
+}
+
+// Helper function to send push notification using NotificationService
+import { notificationService } from './notification.service';
+
+async function sendPushNotification(token: string, title: string, message: string, data: any) {
+  try {
+    await notificationService.sendSinglePushNotification({
+      pushToken: token,
+      title,
+      message,
+      data: {
+        ...data,
+        type: 'service_request'
+      }
+    });
+  } catch (error) {
+    console.error('Push notification error:', error);
+  }
 }

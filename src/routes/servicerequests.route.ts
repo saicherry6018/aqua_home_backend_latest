@@ -7,6 +7,8 @@ import {
   updateServiceRequestStatus,
   assignServiceAgent,
   scheduleServiceRequest,
+  getUnassignedServiceRequests,
+  assignToMe,
 } from '../controllers/serviceRequests.controller';
 import {
   getAllServiceRequestsSchema,
@@ -21,6 +23,13 @@ import {
   generateInstallationPaymentLink,
   refreshInstallationPaymentStatus,
 } from '../controllers/serviceRequests.controller';
+
+// Import Expo and ExpoPushMessage types
+import Expo from 'expo-server-sdk';
+import { ExpoPushMessage, ExpoPushTicket } from 'expo-server-sdk';
+
+// Create an Expo instance
+const expo = new Expo();
 
 export default async function (fastify: FastifyInstance) {
   // Get all service requests (admin, franchise owner, service agent, customer)
@@ -155,9 +164,32 @@ export default async function (fastify: FastifyInstance) {
     preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   },  (req,res)=>refreshInstallationPaymentStatus(req as any,res));
 
+  // Get all unassigned service requests (for service agents)
+  fastify.get('/unassigned', {
+    preHandler: [fastify.authenticate],
+    schema: getAllServiceRequestsSchema
+  }, getUnassignedServiceRequests);
+
+  // Assign service request to self
+  fastify.post('/:id/assign-to-me', {
+    preHandler: [fastify.authenticate],
+    schema: {
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }
+        },
+        required: ['id']
+      }
+    }
+  },(req,res) =>assignToMe(req as any,res));
+
   // fastify.post('/:id/upload-payment-proof', {
   //   preHandler: [fastify.authenticate, fastify.authorizeRoles([UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN])],
   // }, uploadPaymentProof);
 
   fastify.log.info('Service Request routes registered');
+
+
+
 }
