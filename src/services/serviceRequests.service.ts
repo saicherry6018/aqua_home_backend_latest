@@ -440,7 +440,6 @@ export async function updateServiceRequestStatus(
     updatedAt: new Date().toISOString(),
   };
 
-
   // Status-specific validations
   switch (status) {
     case ServiceRequestStatus.ASSIGNED:
@@ -464,7 +463,6 @@ export async function updateServiceRequestStatus(
         throw badRequest('Before images are required to start installation service requests');
       }
       break;
-
 
     case ServiceRequestStatus.PAYMENT_PENDING:
       if (!serviceRequest.requirePayment) {
@@ -500,7 +498,6 @@ export async function updateServiceRequestStatus(
       break
   }
 
-
   // Add specific data based on status
   if (data?.agentId) updateData.assignedAgentId = data.agentId;
   if (data?.scheduledDate) updateData.scheduledDate = data.scheduledDate;
@@ -517,42 +514,52 @@ export async function updateServiceRequestStatus(
     // Ensure images are stored as proper JSON string
     updateData[imageField] = JSON.stringify(data.beforeImages);
   }
-  console.log('updateData ', updateData)
-  await db.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
-  await syncInstallationRequestStatus(serviceRequest.installationRequestId, status, user)
 
-  // Log action in history
-  await logActionHistory({
-    entityType: 'service_request',
-    entityId: id,
-    actionType: `status_updated_to_${status.toLowerCase()}`,
-    performedBy: user.userId,
-    performedByRole: user.role,
-    details: {
-      fromStatus: currentStatus,
-      toStatus: status,
-      agentId: data?.agentId,
-      scheduledDate: data?.scheduledDate,
-      imagesCount: data?.images?.length || 0
+  // Use transaction to ensure all operations succeed or fail together
+  return await db.transaction(async (tx) => {
+    console.log('updateData ', updateData)
+    
+    // Update service request
+    await tx.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
+    
+    // Sync installation request status if needed
+    if (serviceRequest.installationRequestId) {
+      await syncInstallationRequestStatusInTransaction(tx, serviceRequest.installationRequestId, status, user);
     }
-  });
 
-  // If there's a subscription, log it there too
-  if (serviceRequest.subscriptionId) {
-    await logActionHistory({
-      entityType: 'subscription',
-      entityId: serviceRequest.subscriptionId,
-      actionType: `service_request_${status.toLowerCase()}`,
-      performedByRole: user.role,
+    // Log action in history
+    await logActionHistoryInTransaction(tx, {
+      entityType: 'service_request',
+      entityId: id,
+      actionType: `status_updated_to_${status.toLowerCase()}`,
       performedBy: user.userId,
+      performedByRole: user.role,
       details: {
-        serviceRequestId: id,
-        status: status
+        fromStatus: currentStatus,
+        toStatus: status,
+        agentId: data?.agentId,
+        scheduledDate: data?.scheduledDate,
+        imagesCount: data?.images?.length || 0
       }
     });
-  }
 
-  return await getServiceRequestById(id);
+    // If there's a subscription, log it there too
+    if (serviceRequest.subscriptionId) {
+      await logActionHistoryInTransaction(tx, {
+        entityType: 'subscription',
+        entityId: serviceRequest.subscriptionId,
+        actionType: `service_request_${status.toLowerCase()}`,
+        performedByRole: user.role,
+        performedBy: user.userId,
+        details: {
+          serviceRequestId: id,
+          status: status
+        }
+      });
+    }
+
+    return await getServiceRequestById(id);
+  });
 }
 
 // Validate service request status transitions and image requirements
@@ -702,6 +709,76 @@ async function syncInstallationRequestStatus(
     performedByRole: user.role,
     comment: `Service agent ${user.name || user.phone} assigned`
   })
+}
+
+// Transaction-aware version of syncInstallationRequestStatus
+async function syncInstallationRequestStatusInTransaction(
+  tx: any,
+  installationRequestId: string,
+  serviceRequestStatus: ServiceRequestStatus,
+  user: any
+) {
+  let installationStatus: InstallationRequestStatus | null = null;
+  let installationActionType: ActionType | null = null;
+
+  switch (serviceRequestStatus) {
+    case ServiceRequestStatus.IN_PROGRESS:
+      installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
+      installationActionType = ActionType.INSTALLATION_REQUEST_IN_PROGRESS;
+      break;
+    case ServiceRequestStatus.PAYMENT_PENDING:
+      installationStatus = InstallationRequestStatus.PAYMENT_PENDING;
+      installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+      break;
+    case ServiceRequestStatus.COMPLETED:
+      installationStatus = InstallationRequestStatus.INSTALLATION_COMPLETED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_COMPLETED;
+      break;
+    case ServiceRequestStatus.CANCELLED:
+      installationStatus = InstallationRequestStatus.CANCELLED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
+      break;
+    case ServiceRequestStatus.SCHEDULED:
+      installationStatus = InstallationRequestStatus.INSTALLATION_SCHEDULED;
+      installationActionType = ActionType.INSTALLATION_REQUEST_SCHEDULED;
+      break;
+  }
+  
+  if (installationStatus) {
+    await tx.update(installationRequests).set({
+      status: installationStatus
+    }).where(eq(installationRequests.id, installationRequestId));
+
+    await logActionHistoryInTransaction(tx, {
+      installationRequestId: installationRequestId,
+      actionType: installationActionType,
+      fromStatus: serviceRequestStatus,
+      toStatus: ServiceRequestStatus.ASSIGNED,
+      performedBy: user.userId,
+      performedByRole: user.role,
+      comment: `Service agent ${user.name || user.phone} assigned`
+    });
+  }
+}
+
+// Transaction-aware version of logActionHistory
+async function logActionHistoryInTransaction(tx: any, actionData: any) {
+  const { logActionHistory } = await import('../utils/actionHistory');
+  
+  // Create a modified version that uses the transaction
+  const originalDb = getFastifyInstance().db;
+  
+  // Temporarily replace the db instance
+  const fastify = getFastifyInstance();
+  const originalDbRef = fastify.db;
+  fastify.db = tx;
+  
+  try {
+    await logActionHistory(actionData);
+  } finally {
+    // Restore original db reference
+    fastify.db = originalDbRef;
+  }
 }
 
 export async function assignServiceAgent(id: string, assignedToId: string, user: any) {
@@ -1049,6 +1126,109 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
 
 // Helper function to send push notification using NotificationService
 import { notificationService } from './notification.service';
+
+// Refresh payment status for installation service requests
+export async function refreshPaymentStatus(serviceRequestId: string, user: any) {
+  const fastify = getFastifyInstance();
+  const db = fastify.db;
+
+  const serviceRequest = await getServiceRequestById(serviceRequestId);
+  if (!serviceRequest) throw notFound('Service Request');
+
+  if (!serviceRequest.installationRequestId) {
+    throw badRequest('This service request is not linked to an installation');
+  }
+
+  // Check if there's already a completed payment to prevent duplicates
+  const existingPayment = await db.query.payments.findFirst({
+    where: and(
+      eq(payments.installationRequestId, serviceRequest.installationRequestId),
+      eq(payments.status, PaymentStatus.COMPLETED)
+    )
+  });
+
+  if (existingPayment) {
+    // Payment already exists and is completed
+    return {
+      paymentStatus: 'COMPLETED',
+      message: 'Payment already completed',
+      payment: existingPayment
+    };
+  }
+
+  // Use transaction to ensure consistency
+  return await db.transaction(async (tx) => {
+    // Check for pending payment
+    const pendingPayment = await tx.query.payments.findFirst({
+      where: and(
+        eq(payments.installationRequestId, serviceRequest.installationRequestId),
+        eq(payments.status, PaymentStatus.PENDING)
+      )
+    });
+
+    let paymentResult;
+
+    if (pendingPayment && pendingPayment.razorpayOrderId) {
+      // Check with Razorpay for payment status
+      try {
+        const razorpay = fastify.razorpay;
+        const orderDetails = await razorpay.orders.fetch(pendingPayment.razorpayOrderId);
+        
+        if (orderDetails.status === 'paid') {
+          // Update payment status
+          await tx.update(payments).set({
+            status: PaymentStatus.COMPLETED,
+            paidDate: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          }).where(eq(payments.id, pendingPayment.id));
+
+          // Update installation request status
+          await tx.update(installationRequests).set({
+            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
+            updatedAt: new Date().toISOString()
+          }).where(eq(installationRequests.id, serviceRequest.installationRequestId));
+
+          // Log action history
+          await logActionHistoryInTransaction(tx, {
+            paymentId: pendingPayment.id,
+            installationRequestId: serviceRequest.installationRequestId,
+            actionType: ActionType.PAYMENT_COMPLETED,
+            fromStatus: PaymentStatus.PENDING,
+            toStatus: PaymentStatus.COMPLETED,
+            performedBy: user.userId,
+            performedByRole: user.role,
+            comment: 'Payment status refreshed from Razorpay',
+            metadata: { razorpayOrderId: pendingPayment.razorpayOrderId }
+          });
+
+          paymentResult = {
+            paymentStatus: 'COMPLETED',
+            message: 'Payment status updated to completed',
+            payment: { ...pendingPayment, status: PaymentStatus.COMPLETED }
+          };
+        } else {
+          paymentResult = {
+            paymentStatus: 'PENDING',
+            message: 'Payment is still pending',
+            payment: pendingPayment
+          };
+        }
+      } catch (error) {
+        console.error('Error checking Razorpay payment status:', error);
+        throw badRequest('Failed to refresh payment status from Razorpay');
+      }
+    } else {
+      // No payment found or no Razorpay order ID
+      paymentResult = {
+        paymentStatus: 'NOT_FOUND',
+        message: 'No payment record found for this installation',
+        payment: null
+      };
+    }
+
+    return paymentResult;
+  });
+}
 
 async function sendPushNotification(token: string, title: string, message: string, data: any) {
   try {

@@ -403,8 +403,8 @@ export async function refreshInstallationPaymentStatus(
       throw forbidden('You can only check payment status for your assigned requests');
     }
 
-    const result = await installationRequestService.refreshPaymentStatus(
-      serviceRequest.installationRequestId,
+    const result = await serviceRequestService.refreshPaymentStatus(
+      request.params.id,
       request.user
     );
 
