@@ -629,3 +629,324 @@ export async function terminateSubscription(id: string, user: any, options: { re
 
   return await getSubscriptionById(id);
 }
+
+// Generate payment link for subscription
+export async function generatePaymentLink(subscriptionId: string, user: any) {
+  const fastify = getFastifyInstance();
+  const subscription = await getSubscriptionById(subscriptionId);
+  
+  if (!subscription) throw notFound('Subscription');
+
+  // Check permissions - customer can pay for their own subscription
+  if (user.role === UserRole.CUSTOMER && subscription.customerId !== user.userId) {
+    throw forbidden('You can only pay for your own subscription');
+  } else if (user.role === UserRole.FRANCHISE_OWNER) {
+    const franchise = await getFranchiseById(subscription.franchiseId);
+    if (!franchise || franchise.ownerId !== user.userId) {
+      throw forbidden('Subscription is not in your franchise area');
+    }
+  } else if (![UserRole.ADMIN, UserRole.SERVICE_AGENT].includes(user.role)) {
+    throw forbidden('You do not have permission to generate payment links');
+  }
+
+  // Check if subscription is active
+  if (subscription.status !== RentalStatus.ACTIVE) {
+    throw badRequest('Payment links can only be generated for active subscriptions');
+  }
+
+  // Check if there's already a pending payment for this subscription
+  const existingPendingPayment = await fastify.db.query.payments.findFirst({
+    where: and(
+      eq(payments.subscriptionId, subscriptionId),
+      eq(payments.status, PaymentStatus.PENDING),
+      eq(payments.type, PaymentType.SUBSCRIPTION)
+    )
+  });
+
+  if (existingPendingPayment && existingPendingPayment.razorpayOrderId) {
+    // Return existing payment link
+    try {
+      const razorpay = fastify.razorpay;
+      const orderDetails = await razorpay.orders.fetch(existingPendingPayment.razorpayOrderId);
+      
+      if (orderDetails.status === 'created') {
+        return {
+          paymentId: existingPendingPayment.id,
+          razorpayOrderId: existingPendingPayment.razorpayOrderId,
+          amount: existingPendingPayment.amount,
+          currency: 'INR',
+          key: process.env.RAZORPAY_KEY_ID,
+          message: 'Existing payment link found'
+        };
+      }
+    } catch (error) {
+      console.error('Error fetching existing Razorpay order:', error);
+    }
+  }
+
+  try {
+    const razorpay = fastify.razorpay;
+    
+    // Create Razorpay order
+    const razorpayOrder = await razorpay.orders.create({
+      amount: subscription.monthlyAmount * 100, // Amount in paise
+      currency: 'INR',
+      notes: {
+        subscriptionId: subscriptionId,
+        customerId: subscription.customerId,
+        type: 'subscription_payment',
+        connectId: subscription.connectId
+      }
+    });
+
+    // Create or update payment record
+    let paymentId: string;
+    
+    if (existingPendingPayment) {
+      // Update existing payment record
+      await fastify.db.update(payments).set({
+        razorpayOrderId: razorpayOrder.id,
+        updatedAt: new Date().toISOString()
+      }).where(eq(payments.id, existingPendingPayment.id));
+      paymentId = existingPendingPayment.id;
+    } else {
+      // Create new payment record
+      paymentId = await generateId('pay');
+      await fastify.db.insert(payments).values({
+        id: paymentId,
+        subscriptionId: subscriptionId,
+        amount: subscription.monthlyAmount,
+        type: PaymentType.SUBSCRIPTION,
+        status: PaymentStatus.PENDING,
+        paymentMethod: 'RAZORPAY_MANUAL',
+        razorpayOrderId: razorpayOrder.id,
+        dueDate: subscription.nextPaymentDate,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+    }
+
+    // Log action history
+    await logActionHistory({
+      paymentId: paymentId,
+      subscriptionId: subscriptionId,
+      actionType: ActionType.PAYMENT_INITIATED,
+      toStatus: PaymentStatus.PENDING,
+      performedBy: user.userId,
+      performedByRole: user.role,
+      comment: 'Payment link generated for subscription',
+      metadata: { 
+        razorpayOrderId: razorpayOrder.id,
+        amount: subscription.monthlyAmount
+      }
+    });
+
+    return {
+      paymentId: paymentId,
+      razorpayOrderId: razorpayOrder.id,
+      amount: subscription.monthlyAmount,
+      currency: 'INR',
+      key: process.env.RAZORPAY_KEY_ID,
+      message: 'Payment link generated successfully'
+    };
+
+  } catch (error) {
+    console.error('Error creating Razorpay order:', error);
+    throw badRequest('Failed to generate payment link');
+  }
+}
+
+// Refresh payment status for subscription
+export async function refreshPaymentStatus(subscriptionId: string, user: any) {
+  const fastify = getFastifyInstance();
+  const subscription = await getSubscriptionById(subscriptionId);
+  
+  if (!subscription) throw notFound('Subscription');
+
+  // Check permissions
+  if (user.role === UserRole.CUSTOMER && subscription.customerId !== user.userId) {
+    throw forbidden('You can only check payment status for your own subscription');
+  } else if (user.role === UserRole.FRANCHISE_OWNER) {
+    const franchise = await getFranchiseById(subscription.franchiseId);
+    if (!franchise || franchise.ownerId !== user.userId) {
+      throw forbidden('Subscription is not in your franchise area');
+    }
+  } else if (![UserRole.ADMIN, UserRole.SERVICE_AGENT].includes(user.role)) {
+    throw forbidden('You do not have permission to check payment status');
+  }
+
+  // Find pending payment for this subscription
+  const pendingPayment = await fastify.db.query.payments.findFirst({
+    where: and(
+      eq(payments.subscriptionId, subscriptionId),
+      eq(payments.status, PaymentStatus.PENDING),
+      eq(payments.type, PaymentType.SUBSCRIPTION)
+    )
+  });
+
+  if (!pendingPayment || !pendingPayment.razorpayOrderId) {
+    return {
+      paymentStatus: 'NOT_FOUND',
+      message: 'No pending payment found for this subscription'
+    };
+  }
+
+  try {
+    const razorpay = fastify.razorpay;
+    const orderDetails = await razorpay.orders.fetch(pendingPayment.razorpayOrderId);
+    
+    if (orderDetails.status === 'paid') {
+      // Update payment status
+      await fastify.db.update(payments).set({
+        status: PaymentStatus.COMPLETED,
+        paidDate: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      }).where(eq(payments.id, pendingPayment.id));
+
+      // Update subscription's next payment date
+      const nextPaymentDate = calculateNextPaymentDate(new Date(subscription.nextPaymentDate));
+      const currentPeriodEndDate = nextPaymentDate;
+      
+      await fastify.db.update(subscriptions).set({
+        currentPeriodStartDate: new Date().toISOString(),
+        currentPeriodEndDate: currentPeriodEndDate.toISOString(),
+        nextPaymentDate: nextPaymentDate.toISOString(),
+        updatedAt: new Date().toISOString()
+      }).where(eq(subscriptions.id, subscriptionId));
+
+      // Log action history
+      await logActionHistory({
+        paymentId: pendingPayment.id,
+        subscriptionId: subscriptionId,
+        actionType: ActionType.PAYMENT_COMPLETED,
+        fromStatus: PaymentStatus.PENDING,
+        toStatus: PaymentStatus.COMPLETED,
+        performedBy: user.userId,
+        performedByRole: user.role,
+        comment: 'Payment status refreshed from Razorpay',
+        metadata: { razorpayOrderId: pendingPayment.razorpayOrderId }
+      });
+
+      return {
+        paymentStatus: 'COMPLETED',
+        message: 'Payment completed successfully',
+        payment: { ...pendingPayment, status: PaymentStatus.COMPLETED },
+        nextPaymentDate: nextPaymentDate.toISOString()
+      };
+    } else {
+      return {
+        paymentStatus: 'PENDING',
+        message: 'Payment is still pending',
+        payment: pendingPayment
+      };
+    }
+  } catch (error) {
+    console.error('Error checking Razorpay payment status:', error);
+    throw badRequest('Failed to refresh payment status from Razorpay');
+  }
+}
+
+// Mark payment as completed manually (for cash/UPI payments)
+export async function markPaymentCompleted(
+  subscriptionId: string,
+  paymentData: {
+    paymentMethod: 'CASH' | 'UPI';
+    paymentImage?: string;
+    notes?: string;
+  },
+  user: any
+) {
+  const fastify = getFastifyInstance();
+  const subscription = await getSubscriptionById(subscriptionId);
+  
+  if (!subscription) throw notFound('Subscription');
+
+  // Only service agents and franchise owners can mark payments as completed
+  if (![UserRole.SERVICE_AGENT, UserRole.FRANCHISE_OWNER, UserRole.ADMIN].includes(user.role)) {
+    throw forbidden('You do not have permission to mark payments as completed');
+  }
+
+  if (user.role === UserRole.FRANCHISE_OWNER) {
+    const franchise = await getFranchiseById(subscription.franchiseId);
+    if (!franchise || franchise.ownerId !== user.userId) {
+      throw forbidden('Subscription is not in your franchise area');
+    }
+  }
+
+  // Find pending payment for this subscription
+  const pendingPayment = await fastify.db.query.payments.findFirst({
+    where: and(
+      eq(payments.subscriptionId, subscriptionId),
+      eq(payments.status, PaymentStatus.PENDING),
+      eq(payments.type, PaymentType.SUBSCRIPTION)
+    )
+  });
+
+  let paymentId: string;
+
+  if (pendingPayment) {
+    // Update existing payment
+    await fastify.db.update(payments).set({
+      status: PaymentStatus.COMPLETED,
+      paymentMethod: paymentData.paymentMethod,
+      collectedByAgentId: user.userId,
+      receiptImage: paymentData.paymentImage || null,
+      paidDate: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }).where(eq(payments.id, pendingPayment.id));
+    paymentId = pendingPayment.id;
+  } else {
+    // Create new payment record
+    paymentId = await generateId('pay');
+    await fastify.db.insert(payments).values({
+      id: paymentId,
+      subscriptionId: subscriptionId,
+      amount: subscription.monthlyAmount,
+      type: PaymentType.SUBSCRIPTION,
+      status: PaymentStatus.COMPLETED,
+      paymentMethod: paymentData.paymentMethod,
+      collectedByAgentId: user.userId,
+      receiptImage: paymentData.paymentImage || null,
+      dueDate: subscription.nextPaymentDate,
+      paidDate: new Date().toISOString(),
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  // Update subscription's next payment date
+  const nextPaymentDate = calculateNextPaymentDate(new Date(subscription.nextPaymentDate));
+  const currentPeriodEndDate = nextPaymentDate;
+  
+  await fastify.db.update(subscriptions).set({
+    currentPeriodStartDate: new Date().toISOString(),
+    currentPeriodEndDate: currentPeriodEndDate.toISOString(),
+    nextPaymentDate: nextPaymentDate.toISOString(),
+    updatedAt: new Date().toISOString()
+  }).where(eq(subscriptions.id, subscriptionId));
+
+  // Log action history
+  await logActionHistory({
+    paymentId: paymentId,
+    subscriptionId: subscriptionId,
+    actionType: ActionType.PAYMENT_COMPLETED,
+    fromStatus: PaymentStatus.PENDING,
+    toStatus: PaymentStatus.COMPLETED,
+    performedBy: user.userId,
+    performedByRole: user.role,
+    comment: `Payment marked as completed via ${paymentData.paymentMethod}${paymentData.notes ? ': ' + paymentData.notes : ''}`,
+    metadata: { 
+      paymentMethod: paymentData.paymentMethod,
+      collectedBy: user.userId,
+      hasReceiptImage: !!paymentData.paymentImage
+    }
+  });
+
+  return {
+    message: 'Payment marked as completed successfully',
+    payment: await fastify.db.query.payments.findFirst({
+      where: eq(payments.id, paymentId)
+    }),
+    nextPaymentDate: nextPaymentDate.toISOString()
+  };
+}
