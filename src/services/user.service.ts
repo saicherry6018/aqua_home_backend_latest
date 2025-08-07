@@ -1,34 +1,87 @@
 import { eq, and, inArray } from "drizzle-orm";
-import { franchises, installationRequests, subscriptions, User, users } from "../models/schema";
+import { franchises, installationRequests, subscriptions, User, users, serviceRequests, payments, products, franchiseAgents } from "../models/schema";
 import { getFastifyInstance } from "../shared/fastify-instance";
 import { notFound, forbidden } from "../utils/errors";
 import { UserRole } from "../types";
 
+// Frontend interfaces
+interface Payment {
+  id: string;
+  amount: number;
+  status: 'COMPLETED' | 'PENDING' | 'FAILED';
+  method: string;
+  razorpayPaymentId?: string;
+  paidDate?: string;
+  dueDate: string;
+}
 
-// Assume other models like franchises, subscriptions, installationRequests are also imported and available.
-// For this example, I'll assume their presence and basic structure for demonstration.
+interface Subscription {
+  id: string;
+  productId: string;
+  productName: string;
+  planType: 'MONTHLY' | 'YEARLY';
+  status: 'ACTIVE' | 'INACTIVE' | 'EXPIRED';
+  startDate: string;
+  endDate: string;
+  amount: number;
+  franchiseId: string;
+  franchiseName: string;
+  payments: Payment[];
+}
 
-// Placeholder for Franchise, Subscription, and InstallationRequest models if not imported elsewhere.
-// In a real scenario, these would be properly imported from schema files.
-// Example:
-// import { Franchise, franchises } from "../models/schema";
-// import { Subscription, subscriptions } from "../models/schema";
-// import { InstallationRequest, installationRequests } from "../models/schema";
+interface InstallationRequest {
+  id: string;
+  productId: string;
+  productName: string;
+  status: string;
+  requestedDate: string;
+  scheduledDate?: string;
+  completedDate?: string;
+  franchiseId: string;
+  franchiseName: string;
+  assignedAgent?: {
+    id: string;
+    name: string;
+    phone: string;
+  };
+}
 
+interface ServiceRequest {
+  id: string;
+  type: string;
+  description: string;
+  status: string;
+  priority: string;
+  createdAt: string;
+  completedDate?: string;
+  franchiseId: string;
+  franchiseName: string;
+  assignedAgent?: {
+    id: string;
+    name: string;
+    phone: string;
+  };
+}
 
-// Mock imports for demonstration if not present in the original file
-// These would typically be imported from your schema definitions
-
-
+interface CustomerDetails {
+  id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  role: string;
+  isActive: boolean;
+  createdAt: string;
+  subscriptions: Subscription[];
+  installationRequests: InstallationRequest[];
+  serviceRequests: ServiceRequest[];
+}
 
 export async function onboardUser(
     userId: string,
     onboardData: {
         name: string;
-
         city: string,
         alternativePhone?: string;
-
     }
 ): Promise<User> {
     const fastify = getFastifyInstance();
@@ -38,7 +91,6 @@ export async function onboardUser(
         throw notFound('User');
     }
 
-
     const updateData: any = {
         name: onboardData.name,
         hasOnboarded: true,
@@ -47,16 +99,12 @@ export async function onboardUser(
         city: onboardData.city
     };
 
-
-
     if (onboardData.alternativePhone) updateData.alternativePhone = onboardData.alternativePhone;
-
 
     const [userUpdated] = await fastify.db
         .update(users)
         .set(updateData)
         .where(eq(users.id, userId)).returning();
-
 
     return userUpdated;
 }
@@ -113,7 +161,7 @@ export async function registerPushNotificationToken(userId: string, token: strin
   };
 }
 
-export async function getUserDetails(userId: string, requestingUser: any) {
+export async function getUserDetails(userId: string, requestingUser: any): Promise<CustomerDetails> {
   const fastify = getFastifyInstance();
 
   // Permission checks
@@ -171,5 +219,109 @@ export async function getUserDetails(userId: string, requestingUser: any) {
   if (!userDetails) {
     throw notFound('User');
   }
-  return userDetails;
+
+  // Fetch subscriptions with related data
+  const userSubscriptions = await fastify.db.query.subscriptions.findMany({
+    where: eq(subscriptions.customerId, userId),
+    with: {
+      product: true,
+      franchise: true,
+      payments: {
+        where: eq(payments.subscriptionId, subscriptions.id)
+      }
+    }
+  });
+
+  // Fetch installation requests with related data
+  const userInstallations = await fastify.db.query.installationRequests.findMany({
+    where: eq(installationRequests.customerId, userId),
+    with: {
+      product: true,
+      franchise: true,
+      assignedTechnician: true
+    }
+  });
+
+  // Fetch service requests with related data
+  const userServiceRequests = await fastify.db.query.serviceRequests.findMany({
+    where: eq(serviceRequests.customerId, userId),
+    with: {
+      product: true,
+      franchise: true,
+      assignedAgent: true
+    }
+  });
+
+  // Format subscriptions
+  const formattedSubscriptions: Subscription[] = userSubscriptions.map(sub => ({
+    id: sub.id,
+    productId: sub.productId,
+    productName: sub.product?.name || 'Unknown Product',
+    planType: 'MONTHLY', // Assuming monthly, you might need to derive this from your data
+    status: sub.status as 'ACTIVE' | 'INACTIVE' | 'EXPIRED',
+    startDate: sub.startDate,
+    endDate: sub.endDate || '',
+    amount: sub.monthlyAmount,
+    franchiseId: sub.franchiseId,
+    franchiseName: sub.franchise?.name || 'Unknown Franchise',
+    payments: (sub.payments || []).map(payment => ({
+      id: payment.id,
+      amount: payment.amount,
+      status: payment.status as 'COMPLETED' | 'PENDING' | 'FAILED',
+      method: payment.paymentMethod,
+      razorpayPaymentId: payment.razorpayPaymentId || undefined,
+      paidDate: payment.paidDate || undefined,
+      dueDate: payment.dueDate || ''
+    }))
+  }));
+
+  // Format installation requests
+  const formattedInstallations: InstallationRequest[] = userInstallations.map(install => ({
+    id: install.id,
+    productId: install.productId,
+    productName: install.product?.name || 'Unknown Product',
+    status: install.status,
+    requestedDate: install.createdAt,
+    scheduledDate: install.scheduledDate || undefined,
+    completedDate: install.completedDate || undefined,
+    franchiseId: install.franchiseId,
+    franchiseName: install.franchiseName,
+    assignedAgent: install.assignedTechnician ? {
+      id: install.assignedTechnician.id,
+      name: install.assignedTechnician.name || 'Unknown',
+      phone: install.assignedTechnician.phone
+    } : undefined
+  }));
+
+  // Format service requests
+  const formattedServiceRequests: ServiceRequest[] = userServiceRequests.map(service => ({
+    id: service.id,
+    type: service.type,
+    description: service.description,
+    status: service.status,
+    priority: 'MEDIUM', // You might need to add priority field to your schema or derive it
+    createdAt: service.createdAt,
+    completedDate: service.completedDate || undefined,
+    franchiseId: service.franchiseId,
+    franchiseName: service.franchise?.name || 'Unknown Franchise',
+    assignedAgent: service.assignedAgent ? {
+      id: service.assignedAgent.id,
+      name: service.assignedAgent.name || 'Unknown',
+      phone: service.assignedAgent.phone
+    } : undefined
+  }));
+
+  // Return formatted customer details
+  return {
+    id: userDetails.id,
+    name: userDetails.name || '',
+    phone: userDetails.phone,
+    email: undefined, // Add email field to your user schema if needed
+    role: userDetails.role,
+    isActive: userDetails.isActive,
+    createdAt: userDetails.createdAt,
+    subscriptions: formattedSubscriptions,
+    installationRequests: formattedInstallations,
+    serviceRequests: formattedServiceRequests
+  };
 }

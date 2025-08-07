@@ -14,7 +14,7 @@ import s3Plugin from './plugins/s3';
 import firebasePlugin from './plugins/firebase';
 // import sesPlugin from './plugins/ses';
 // import whatsappPlugin from './plugins/whatsapp';
-
+import webhookRoutes from './routes/webhooks.routes';
 // Import routes
 import authRoutes from './routes/auth.route';
 // import userRoutes from './routes/user';
@@ -131,6 +131,7 @@ app.register(serviceAgentRoutes, { prefix: '/api/agents' });
 app.register(installationRequestRoutes, { prefix: '/api/installation-requests' });
 app.register(subscriptions, { prefix: '/api/subscriptions' });
 app.register(paymentsRoutes, { prefix: '/api/payments' });
+app.register(webhookRoutes, { prefix: '/api/webhooks' });
 // app.register(homescreenRoutes, { prefix: '/api/homescreen' });
 
 // Add health check route

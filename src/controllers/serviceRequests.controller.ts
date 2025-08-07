@@ -415,13 +415,13 @@ export async function refreshInstallationPaymentStatus(
       request.user
     );
 
-    // If payment is completed, update service request status
-    if (result.paymentStatus === 'COMPLETED') {
-      await serviceRequestService.updateServiceRequestStatus(
-        request.params.id,
-        'COMPLETED' as any, // Consider using a more specific type or enum for status
-        request.user
-      );
+    // // If payment is completed, update service request status
+    // if (result.paymentStatus === 'COMPLETED') {
+    //   await serviceRequestService.updateServiceRequestStatus(
+    //     request.params.id,
+    //     'COMPLETED' as any, // Consider using a more specific type or enum for status
+    //     request.user
+    //   );
       // Notify the customer about payment completion
       if (serviceRequest.customerId) {
         const customer = await serviceRequestService.getUserById(serviceRequest.customerId);
@@ -434,73 +434,7 @@ export async function refreshInstallationPaymentStatus(
           });
         }
       }
-    }
-
-    return reply.code(200).send(result);
-  } catch (error) {
-    handleError(error, request, reply);
-  }
-}
-
-export async function verifyInstallationPayment(
-  request: FastifyRequest<{
-    Params: { id: string };
-    Body: {
-      paymentMethod: 'CASH' | 'UPI';
-      paymentImage: string;
-      notes?: string;
-    }
-  }>,
-  reply: FastifyReply
-) {
-  try {
-    const serviceRequest = await serviceRequestService.getServiceRequestById(request.params.id);
-
-    if (!serviceRequest) {
-      throw notFound('Service request');
-    }
-
-    if (serviceRequest.type !== 'INSTALLATION' || !serviceRequest.installationRequestId) {
-      throw forbidden('This endpoint is only for installation service requests');
-    }
-
-    if (serviceRequest.status !== 'PAYMENT_PENDING') {
-      throw badRequest('Service request must be in PAYMENT_PENDING status to verify payment');
-    }
-
-    // Check if user has permission
-    if (request.user.role === UserRole.SERVICE_AGENT && serviceRequest.assignedToId !== request.user.userId) {
-      throw forbidden('You can only upload payment proof for your assigned requests');
-    }
-
-    const result = await installationRequestService.verifyPaymentAndComplete(
-      serviceRequest.installationRequestId,
-      {
-        paymentMethod: request.body.paymentMethod,
-        paymentImage: request.body.paymentImage
-      },
-      request.user
-    );
-
-    // Update service request status to completed
-    await serviceRequestService.updateServiceRequestStatus(
-      request.params.id,
-      'COMPLETED' as any, // Consider using a more specific type or enum for status
-      request.user
-    );
-
-    // Notify the customer about payment completion
-    if (serviceRequest.customerId) {
-      const customer = await serviceRequestService.getUserById(serviceRequest.customerId);
-      if (customer && customer.pushNotificationToken) {
-        await notificationService.sendSinglePushNotification({
-          pushToken: customer.pushNotificationToken,
-          title: 'Payment Verified',
-          message: `Your payment for service request #${request.params.id} has been verified and the request is completed.`,
-          data: { serviceRequestId: request.params.id, type: 'PAYMENT_VERIFIED_COMPLETED', screen: `/service-requests/${request.params.id}` },
-        });
-      }
-    }
+    // }
 
     return reply.code(200).send(result);
   } catch (error) {

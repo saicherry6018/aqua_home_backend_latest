@@ -51,10 +51,10 @@ export const assignAgentToFranchises = async (
                 eq(franchiseAgents.isPrimary, true)
             ));
     }
-
+    const id =await generateId('fa')
     // Insert new assignments
     const assignmentRecords = assignments.map(assignment => ({
-        id: generateId('fa'),
+        id: id,
         franchiseId: assignment.franchiseId,
         agentId,
         role: assignment.role || 'SERVICE_AGENT',

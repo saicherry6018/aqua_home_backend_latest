@@ -49,6 +49,14 @@ export const products = sqliteTable("products", {
     updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`)
 });
 
+export const razorpayPlans = sqliteTable('razorpay_plans', {
+    id: text("id").primaryKey(),
+    razorpayPlanId: text('razorpay_plan_id').notNull(),
+    amount: integer('amount'),
+    createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),
+    updatedAt: text("updated_at").notNull().default(sql`CURRENT_TIMESTAMP`)
+})
+
 export const franchises = sqliteTable("franchises", {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
@@ -88,6 +96,7 @@ export const installationRequests = sqliteTable('installation_requests', {
     razorpayPaymentLink: text('razorpay_payment_link'),
     razorpaySubscriptionId: text('razorpay_subscription_id'),
     autoPaymentEnabled: boolean('auto_payment_enabled').default(false),
+    payAmount: integer('pay_amount')
 });
 
 // Subscriptions table - ONLY for RENTAL orders (not purchases)
@@ -128,7 +137,7 @@ export const serviceRequests = sqliteTable("service_requests", {
     franchiseId: text("franchise_id").notNull().references(() => franchises.id),
     scheduledDate: text("scheduled_date"),
     completedDate: text("completed_date"),
-    requirePayment : integer('require_payment',{mode:'boolean'}).notNull().default(false),
+    requirePayment: integer('require_payment', { mode: 'boolean' }).notNull().default(false),
     beforeImages: text("before_images"), // JSON array - agent uploads before service
     afterImages: text("after_images"), // JSON array - agent uploads after service
     createdAt: text("created_at").notNull().default(sql`CURRENT_TIMESTAMP`),

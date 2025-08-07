@@ -1,13 +1,12 @@
 import { FastifyInstance } from 'fastify';
 import { eq, and, or, inArray } from 'drizzle-orm';
 import { serviceRequests, users, products, subscriptions, installationRequests, franchises, payments, franchiseAgents } from '../models/schema';
-import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus, PaymentStatus } from '../types';
+import { ServiceRequestStatus, ServiceRequestType, UserRole, ActionType, InstallationRequestStatus, PaymentStatus, PaymentType } from '../types';
 import { generateId, parseJsonSafe } from '../utils/helpers';
 import { notFound, badRequest, forbidden } from '../utils/errors';
 import { getFastifyInstance } from '../shared/fastify-instance';
 import { logActionHistory, createServiceRequestStatusAction } from '../utils/actionHistory';
-
-
+import { notificationService } from './notification.service';
 // Helper function to get user by ID
 export async function getUserById(userId: string) {
   const fastify = getFastifyInstance();
@@ -495,6 +494,8 @@ export async function updateServiceRequestStatus(
     case ServiceRequestStatus.CANCELLED:
       updateData.beforeImages = null
       updateData.afterImages = null
+
+
       break
   }
 
@@ -518,10 +519,10 @@ export async function updateServiceRequestStatus(
   // Use transaction to ensure all operations succeed or fail together
   return await db.transaction(async (tx) => {
     console.log('updateData ', updateData)
-    
+
     // Update service request
     await tx.update(serviceRequests).set(updateData).where(eq(serviceRequests.id, id));
-    
+
     // Sync installation request status if needed
     if (serviceRequest.installationRequestId) {
       await syncInstallationRequestStatusInTransaction(tx, serviceRequest.installationRequestId, status, user);
@@ -721,6 +722,10 @@ async function syncInstallationRequestStatusInTransaction(
   let installationStatus: InstallationRequestStatus | null = null;
   let installationActionType: ActionType | null = null;
 
+  let updateData: any = {
+
+  }
+
   switch (serviceRequestStatus) {
     case ServiceRequestStatus.IN_PROGRESS:
       installationStatus = InstallationRequestStatus.INSTALLATION_IN_PROGRESS;
@@ -737,16 +742,20 @@ async function syncInstallationRequestStatusInTransaction(
     case ServiceRequestStatus.CANCELLED:
       installationStatus = InstallationRequestStatus.CANCELLED;
       installationActionType = ActionType.INSTALLATION_REQUEST_CANCELLED;
+      updateData.razorpayPaymentLink = null
+      updateData.razorpaySubscriptionId = null
+
       break;
     case ServiceRequestStatus.SCHEDULED:
       installationStatus = InstallationRequestStatus.INSTALLATION_SCHEDULED;
       installationActionType = ActionType.INSTALLATION_REQUEST_SCHEDULED;
       break;
   }
-  
+
   if (installationStatus) {
     await tx.update(installationRequests).set({
-      status: installationStatus
+      status: installationStatus,
+      ...updateData
     }).where(eq(installationRequests.id, installationRequestId));
 
     await logActionHistoryInTransaction(tx, {
@@ -764,15 +773,15 @@ async function syncInstallationRequestStatusInTransaction(
 // Transaction-aware version of logActionHistory
 async function logActionHistoryInTransaction(tx: any, actionData: any) {
   const { logActionHistory } = await import('../utils/actionHistory');
-  
+
   // Create a modified version that uses the transaction
   const originalDb = getFastifyInstance().db;
-  
+
   // Temporarily replace the db instance
   const fastify = getFastifyInstance();
   const originalDbRef = fastify.db;
   fastify.db = tx;
-  
+
   try {
     await logActionHistory(actionData);
   } finally {
@@ -1141,14 +1150,13 @@ async function sendServiceRequestNotifications(serviceRequest: any, action: stri
   }
 }
 
-// Helper function to send push notification using NotificationService
-import { notificationService } from './notification.service';
 
-// Refresh payment status for installation service requests
+
 export async function refreshPaymentStatus(serviceRequestId: string, user: any) {
   const fastify = getFastifyInstance();
   const db = fastify.db;
 
+  // Basic validations
   const serviceRequest = await getServiceRequestById(serviceRequestId);
   if (!serviceRequest) throw notFound('Service Request');
 
@@ -1156,113 +1164,317 @@ export async function refreshPaymentStatus(serviceRequestId: string, user: any) 
     throw badRequest('This service request is not linked to an installation');
   }
 
-  // Check if there's already a completed payment to prevent duplicates
-  const existingPayment = await db.query.payments.findFirst({
-    where: and(
-      eq(payments.installationRequestId, serviceRequest.installationRequestId),
-      eq(payments.status, PaymentStatus.COMPLETED)
-    )
-  });
-
-  if (existingPayment) {
-    // Payment already exists and is completed
-    return {
-      paymentStatus: 'COMPLETED',
-      message: 'Payment already completed',
-      payment: existingPayment
-    };
+  if (serviceRequest.status !== InstallationRequestStatus.PAYMENT_PENDING) {
+    throw badRequest('Installation must be in payment pending state');
   }
 
-  // Use transaction to ensure consistency
+  const installationRequest = await fastify.db.query.installationRequests.findFirst({
+    where: eq(installationRequests.id, serviceRequest.installationRequestId)
+  })
+
+  if (!installationRequest.razorpaySubscriptionId) {
+    throw badRequest('No payment subscription found for this request');
+  }
+
+  console.log('came here ')
+  // Use single transaction for all database operations
   return await db.transaction(async (tx) => {
-    // Check for pending payment
-    const pendingPayment = await tx.query.payments.findFirst({
-      where: and(
-        eq(payments.installationRequestId, serviceRequest.installationRequestId),
-        eq(payments.status, PaymentStatus.PENDING)
-      )
-    });
+    try {
+      let successfulPayment = null;
 
-    let paymentResult;
+      // Check subscription payments (all orders are subscription-based)
+      if (installationRequest.razorpaySubscriptionId) {
+        const subscription = await fastify.razorpay.subscriptions.fetch(installationRequest.razorpaySubscriptionId);
 
-    if (pendingPayment && pendingPayment.razorpayOrderId) {
-      // Check with Razorpay for payment status
-      try {
-        const razorpay = fastify.razorpay;
-        const orderDetails = await razorpay.orders.fetch(pendingPayment.razorpayOrderId);
-        
-        if (orderDetails.status === 'paid') {
-          // Update payment status
-          await tx.update(payments).set({
-            status: PaymentStatus.COMPLETED,
-            paidDate: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }).where(eq(payments.id, pendingPayment.id));
-
-          // Update installation request status
-          await tx.update(installationRequests).set({
-            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
-            updatedAt: new Date().toISOString()
-          }).where(eq(installationRequests.id, serviceRequest.installationRequestId));
-
-          // Update service request status to COMPLETED
-          await tx.update(serviceRequests).set({
-            status: ServiceRequestStatus.COMPLETED,
-            completedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }).where(eq(serviceRequests.id, serviceRequestId));
-
-          // Log action history for payment
-          await logActionHistoryInTransaction(tx, {
-            paymentId: pendingPayment.id,
-            installationRequestId: serviceRequest.installationRequestId,
-            actionType: ActionType.PAYMENT_COMPLETED,
-            fromStatus: PaymentStatus.PENDING,
-            toStatus: PaymentStatus.COMPLETED,
-            performedBy: user.userId,
-            performedByRole: user.role,
-            comment: 'Payment status refreshed from Razorpay',
-            metadata: { razorpayOrderId: pendingPayment.razorpayOrderId }
+        if (subscription.status === 'active' || subscription.status === 'authenticated') {
+          // For subscriptions, check if first payment (deposit) is completed
+          const invoices = await fastify.razorpay.invoices.all({
+            subscription_id: serviceRequest.razorpaySubscriptionId,
+            count: 1
           });
 
-          // Log action history for service request completion
-          await logActionHistoryInTransaction(tx, {
-            serviceRequestId: serviceRequestId,
-            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
-            fromStatus: ServiceRequestStatus.PAYMENT_PENDING,
-            toStatus: ServiceRequestStatus.COMPLETED,
-            performedBy: user.userId,
-            performedByRole: user.role,
-            comment: 'Service request completed after payment verification',
-            metadata: { paymentId: pendingPayment.id }
+          console.log('invoices', invoices);
+
+          if (invoices.items.length > 0 && invoices.items[0].status === 'paid') {
+            successfulPayment = {
+              id: invoices.items[0].payment_id,
+              amount: invoices.items[0].amount,
+              method: 'SUBSCRIPTION',
+              razorpaySubscriptionId: serviceRequest.razorpaySubscriptionId,
+              subscriptionDetails: subscription
+            };
+          }
+        }
+      }
+
+      if (successfulPayment) {
+        console.log('successfulPayment need to check this ', successfulPayment);
+
+        // Check if payment already exists in database
+        const existingPayment = await tx.query.payments.findFirst({
+          where: and(
+            eq(payments.installationRequestId, serviceRequest.installationRequestId),
+
+            eq(payments.razorpayPaymentId, successfulPayment.id),
+            eq(payments.status, PaymentStatus.COMPLETED)
+
+          )
+        });
+
+        if (existingPayment && existingPayment.status === PaymentStatus.COMPLETED) {
+          // Payment is completed but still need to check/create subscription
+          const existingSubscription = await tx.query.subscriptions.findFirst({
+            where: eq(subscriptions.requestId, serviceRequest.installationRequestId)
           });
 
-          paymentResult = {
+          if (!existingSubscription) {
+            // Payment exists but subscription doesn't - create it
+            const installationRequest = await tx.query.installationRequests.findFirst({
+              where: eq(installationRequests.id, serviceRequest.installationRequestId),
+              with: { product: true }
+            });
+
+            if (installationRequest) {
+              const now = new Date().toISOString();
+              let currentPeriodStart = now;
+              let currentPeriodEnd = null;
+              let nextPaymentDate = null;
+
+              // Try to get dates from Razorpay subscription if we have them
+              if (successfulPayment && successfulPayment.subscriptionDetails) {
+                const razorpaySubscription = successfulPayment.subscriptionDetails;
+                currentPeriodStart = razorpaySubscription.current_start ? new Date(razorpaySubscription.current_start * 1000).toISOString() : now;
+                currentPeriodEnd = razorpaySubscription.current_end ? new Date(razorpaySubscription.current_end * 1000).toISOString() : null;
+                nextPaymentDate = razorpaySubscription.current_end ? new Date(razorpaySubscription.current_end * 1000).toISOString() : null;
+              }
+              const connectId = generateConnectId();
+              const subscriptionId = await generateId('sub');
+
+
+              await tx.insert(subscriptions).values({
+                id: subscriptionId,
+                connectId,
+                requestId: serviceRequest.installationRequestId,
+                customerId: installationRequest.customerId,
+                productId: installationRequest.productId,
+                franchiseId: installationRequest.franchiseId,
+                planName: `${installationRequest.product.name} Rental Plan`,
+                status: 'ACTIVE',
+                startDate: now,
+                currentPeriodStartDate: currentPeriodStart,
+                currentPeriodEndDate: currentPeriodEnd,
+                nextPaymentDate: nextPaymentDate,
+                monthlyAmount: installationRequest.product.rentPrice,
+                depositAmount: installationRequest.product.deposit,
+                createdAt: now,
+                updatedAt: now
+              });
+
+              // Update payment record with subscription ID if not already linked
+              if (!existingPayment.subscriptionId) {
+                await tx.update(payments)
+                  .set({ subscriptionId, updatedAt: now })
+                  .where(eq(payments.id, existingPayment.id));
+              }
+
+              // Update installation request with connect ID if not already set
+              await tx.update(installationRequests)
+                .set({
+                  connectId,
+                  status: InstallationRequestStatus.INSTALLATION_COMPLETED,
+                  completedDate: now,
+                  updatedAt: now
+                })
+                .where(eq(installationRequests.id, serviceRequest.installationRequestId));
+
+              // Update service request status to COMPLETED if not already
+              await tx.update(serviceRequests)
+                .set({
+                  status: ServiceRequestStatus.COMPLETED,
+                  completedAt: now,
+                  updatedAt: now
+                })
+                .where(eq(serviceRequests.id, serviceRequestId));
+
+              // Log action for subscription creation
+              await logActionHistoryInTransaction(tx, {
+                installationRequestId: serviceRequest.installationRequestId,
+                actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
+                fromStatus: InstallationRequestStatus.PAYMENT_PENDING,
+                toStatus: InstallationRequestStatus.INSTALLATION_COMPLETED,
+                performedBy: user.userId,
+                performedByRole: user.role,
+                comment: 'Subscription created for completed payment',
+                metadata: {
+                  connectId,
+                  subscriptionId,
+                  paymentId: existingPayment.id
+                }
+              });
+            }
+          }
+
+          return {
+            message: 'Payment already completed',
             paymentStatus: 'COMPLETED',
-            message: 'Payment status updated to completed',
-            payment: { ...pendingPayment, status: PaymentStatus.COMPLETED }
-          };
-        } else {
-          paymentResult = {
-            paymentStatus: 'PENDING',
-            message: 'Payment is still pending',
-            payment: pendingPayment
+            paymentDetails: {
+              method: existingPayment.paymentMethod,
+              amount: existingPayment.amount / 100,
+              transactionId: existingPayment.razorpayPaymentId
+            }
           };
         }
-      } catch (error) {
-        console.error('Error checking Razorpay payment status:', error);
-        throw badRequest('Failed to refresh payment status from Razorpay');
-      }
-    } else {
-      // No payment found or no Razorpay order ID
-      paymentResult = {
-        paymentStatus: 'NOT_FOUND',
-        message: 'No payment record found for this installation',
-        payment: null
-      };
-    }
 
-    return paymentResult;
+        // Create or update payment record
+        const paymentId = existingPayment?.id ||await  generateId('payment');
+        const now = new Date().toISOString();
+
+        if (existingPayment) {
+          // Update existing payment
+          await tx.update(payments)
+            .set({
+              status: PaymentStatus.COMPLETED,
+              razorpayPaymentId: successfulPayment.id,
+              razorpaySubscriptionId: successfulPayment.razorpaySubscriptionId,
+              paymentMethod: successfulPayment.method,
+              amount: successfulPayment.amount,
+              paidDate: now,
+              updatedAt: now
+            })
+            .where(eq(payments.id, existingPayment.id));
+        } else {
+          // Create new payment record
+          await tx.insert(payments).values({
+            id: paymentId,
+            installationRequestId: serviceRequest.installationRequestId,
+            amount: successfulPayment.amount/100,
+            type: PaymentType.SUBSCRIPTION,
+            status: PaymentStatus.COMPLETED,
+            paymentMethod: successfulPayment.method,
+            razorpayPaymentId: successfulPayment.id,
+            razorpaySubscriptionId: successfulPayment.razorpaySubscriptionId,
+            paidDate: now,
+            createdAt: now,
+            updatedAt: now
+          });
+        }
+
+        // Ensure subscription exists (all orders are rental/subscription-based)
+        const existingSubscription = await tx.query.subscriptions.findFirst({
+          where: eq(subscriptions.requestId, serviceRequest.installationRequestId)
+        });
+
+        if (!existingSubscription) {
+          const installationRequest = await tx.query.installationRequests.findFirst({
+            where: eq(installationRequests.id, serviceRequest.installationRequestId),
+            with: { product: true }
+          });
+
+          if (installationRequest) {
+            const connectId = generateConnectId();
+            const subscriptionId =await  generateId('sub');
+
+            await tx.insert(subscriptions).values({
+              id: subscriptionId,
+              connectId,
+              requestId: serviceRequest.installationRequestId,
+              customerId: installationRequest.customerId,
+              productId: installationRequest.productId,
+              franchiseId: installationRequest.franchiseId,
+              planName: `${installationRequest.product.name} Rental Plan`,
+              status: 'ACTIVE',
+              startDate: now,
+              currentPeriodStartDate: now,
+              currentPeriodEndDate: getNextMonthDate(now),
+              nextPaymentDate: getNextMonthDate(now),
+              monthlyAmount: installationRequest.product.rentPrice,
+              depositAmount: installationRequest.product.deposit,
+              createdAt: now,
+              updatedAt: now
+            });
+
+            // Update payment record with subscription ID
+            await tx.update(payments)
+              .set({ subscriptionId })
+              .where(eq(payments.id, paymentId));
+
+            // Update installation request with connect ID
+            await tx.update(installationRequests)
+              .set({
+                connectId,
+                updatedAt: now
+              })
+              .where(eq(installationRequests.id, serviceRequest.installationRequestId));
+          }
+        }
+
+        // Update installation request status
+        await tx.update(installationRequests)
+          .set({
+            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
+            completedDate: now,
+            updatedAt: now
+          })
+          .where(eq(installationRequests.id, serviceRequest.installationRequestId));
+
+        // Update service request status to COMPLETED
+        await tx.update(serviceRequests)
+          .set({
+            status: ServiceRequestStatus.COMPLETED,
+            completedAt: now,
+            updatedAt: now
+          })
+          .where(eq(serviceRequests.id, serviceRequestId));
+
+        // Log action history for payment
+        await logActionHistoryInTransaction(tx, {
+          paymentId: paymentId,
+          installationRequestId: serviceRequest.installationRequestId,
+          actionType: ActionType.PAYMENT_COMPLETED,
+          fromStatus: PaymentStatus.PENDING,
+          toStatus: PaymentStatus.COMPLETED,
+          performedBy: user.userId,
+          performedByRole: user.role,
+          comment: 'Payment status refreshed from Razorpay',
+          metadata: {
+            razorpayPaymentId: successfulPayment.id,
+            razorpaySubscriptionId: successfulPayment.razorpaySubscriptionId
+          }
+        });
+
+        // Log action history for service request completion
+        await logActionHistoryInTransaction(tx, {
+          serviceRequestId: serviceRequestId,
+          actionType: ActionType.SERVICE_REQUEST_COMPLETED,
+          fromStatus: ServiceRequestStatus.PAYMENT_PENDING,
+          toStatus: ServiceRequestStatus.COMPLETED,
+          performedBy: user.userId,
+          performedByRole: user.role,
+          comment: 'Service request completed after payment verification',
+          metadata: { paymentId: paymentId }
+        });
+
+        return {
+          message: 'Payment verified and installation completed',
+          paymentStatus: 'COMPLETED',
+          paymentDetails: {
+            method: successfulPayment.method,
+            amount: successfulPayment.amount / 100,
+            transactionId: successfulPayment.id
+          }
+        };
+      } else {
+        return {
+          message: 'Payment not yet received',
+          paymentStatus: 'PENDING',
+          paymentDetails: null
+        };
+      }
+
+    } catch (error) {
+      console.error('Error in refreshPaymentStatus:', error);
+      throw badRequest('Failed to refresh payment status from Razorpay');
+    }
   });
 }
 
@@ -1280,4 +1492,15 @@ async function sendPushNotification(token: string, title: string, message: strin
   } catch (error) {
     console.error('Push notification error:', error);
   }
+}
+
+function generateConnectId(): string {
+  // Generate a unique 8-character connect ID
+  return Math.random().toString(36).substr(2, 8).toUpperCase();
+}
+
+function getNextMonthDate(dateString: string): string {
+  const date = new Date(dateString);
+  date.setMonth(date.getMonth() + 1);
+  return date.toISOString();
 }

@@ -48,7 +48,7 @@ export async function createProduct(data: {
 }) {
     const fastify = getFastifyInstance()
 
-    const id = await await generateId('prod');
+    const id =  await generateId('prod');
 
 
     console.log('came here ')

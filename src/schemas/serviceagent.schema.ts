@@ -200,7 +200,7 @@ export const getAgentDashboardSchema = {
                     name: z.string(),
                     phone: z.string(),
                     alternativePhone: z.string().nullable(),
-                    email: z.string().nullable(),
+                    email: z.string().nullable().optional(),
                     isActive: z.boolean(),
                     joinedDate: z.string()
                 }),
@@ -226,7 +226,7 @@ export const getAgentDashboardSchema = {
                         description: z.string(),
                         type: z.string(),
                         status: z.string(),
-                        priority: z.string().nullable(),
+                        priority: z.string().nullable().optional(),
                         createdAt: z.string(),
                         updatedAt: z.string(),
                         scheduledDate: z.string().nullable(),
@@ -235,17 +235,17 @@ export const getAgentDashboardSchema = {
                         franchiseName: z.string().nullable(),
                         franchiseId: z.string(),
                         requiresPayment: z.boolean(),
-                        paymentAmount: z.number().nullable(),
+                        paymentAmount: z.number().nullable().optional(),
                         beforeImages: z.array(z.string()).nullable(),
                         afterImages: z.array(z.string()).nullable()
                     })),
-                    byStatus: z.object({
-                        PENDING: z.array(z.any()),
-                        ASSIGNED: z.array(z.any()),
-                        IN_PROGRESS: z.array(z.any()),
-                        COMPLETED: z.array(z.any()),
-                        CANCELLED: z.array(z.any())
-                    }),
+                    // byStatus: z.object({
+                    //     PENDING: z.array(z.any()),
+                    //     ASSIGNED: z.array(z.any()),
+                    //     IN_PROGRESS: z.array(z.any()),
+                    //     COMPLETED: z.array(z.any()),
+                    //     CANCELLED: z.array(z.any())
+                    // }),
                     recent: z.array(z.any())
                 })
             })

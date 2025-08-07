@@ -51,6 +51,8 @@ export default async function (fastify: FastifyInstance) {
     fastify.patch("/:id", { schema: getServcieAgentsSchema }, async (request, reply) => await updateServiceAgent(request, reply))
 
     // Get agent dashboard with details and statistics
-    fastify.get("/:agentId/dashboard", { schema: getAgentDashboardSchema }, async (request, reply) => 
+    fastify.get("/:agentId/dashboard",
+        //  { schema: getAgentDashboardSchema },
+          async (request, reply) => 
         await getAgentDashboardController(request, reply))
 }

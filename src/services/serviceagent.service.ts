@@ -2,7 +2,7 @@
 import { getFastifyInstance } from '../shared/fastify-instance';
 import { serviceAgentAddBody } from '../schemas/serviceagent.schema';
 import { z } from 'zod';
-import { franchises, franchiseAgents, installationRequests, serviceRequests, users } from '../models/schema';
+import { franchises, franchiseAgents, installationRequests, serviceRequests, users, payments } from '../models/schema';
 import { generateId } from '../utils/helpers';
 import { UserRole } from '../types';
 import { sql, eq, and, isNull } from 'drizzle-orm';
@@ -231,7 +231,6 @@ export const serviceAgentUpdateInDB = async (id: string, data: {
 
     return updatedAgent;
 };
-
 export const getAgentDashboard = async (agentId: string) => {
     const db = getFastifyInstance().db;
 
@@ -275,8 +274,14 @@ export const getAgentDashboard = async (agentId: string) => {
             franchiseId: franchises.id,
             requiresPayment: serviceRequests.requirePayment,
 
-            beforeImages: serviceRequests.beforeImages,
-            afterImages: serviceRequests.afterImages
+            beforeImages: serviceRequests.beforeImages ?
+                (typeof serviceRequests.beforeImages === 'string' ?
+                    JSON.parse(serviceRequests.beforeImages) :
+                    serviceRequests.beforeImages) : [],
+            afterImages: serviceRequests.afterImages ?
+                (typeof serviceRequests.afterImages === 'string' ?
+                    JSON.parse(serviceRequests.afterImages) :
+                    serviceRequests.afterImages) : []
         })
         .from(serviceRequests)
         .leftJoin(users, eq(serviceRequests.customerId, users.id))
@@ -320,41 +325,62 @@ export const getAgentDashboard = async (agentId: string) => {
             .from(serviceRequests)
             .where(and(
                 eq(serviceRequests.assignedToId, agentId),
-                sql`EXTRACT(MONTH FROM ${serviceRequests.createdAt}) = EXTRACT(MONTH FROM CURRENT_DATE)`,
-                sql`EXTRACT(YEAR FROM ${serviceRequests.createdAt}) = EXTRACT(YEAR FROM CURRENT_DATE)`
+                sql`strftime('%Y-%m', ${serviceRequests.createdAt}) = strftime('%Y-%m', 'now')`
             ));
 
-        const totalRevenue = await tx
-            .select({ sum: sql<number>`COALESCE(SUM(${serviceRequests.paymentAmount}), 0)` })
-            .from(serviceRequests)
+        // Fixed revenue query - using proper Drizzle ORM syntax
+        const revenueQuery = await tx
+            .select({
+                totalRevenue: sql<number>`COALESCE(SUM(${payments.amount}), 0)`
+            })
+            .from(payments)
+            .innerJoin(serviceRequests, eq(payments.serviceRequestId, serviceRequests.id))
             .where(and(
-                eq(serviceRequests.assignedToId, agentId),
-                eq(serviceRequests.status, 'COMPLETED'),
-                eq(serviceRequests.requirePayment, true)
+                eq(payments.status, 'completed'),
+                eq(serviceRequests.assignedToId, agentId)
             ));
-        // const totalRevenue=[[0]]
+
         return {
             totalRequests: totalRequests[0]?.count || 0,
             completedRequests: completedRequests[0]?.count || 0,
             pendingRequests: pendingRequests[0]?.count || 0,
             inProgressRequests: inProgressRequests[0]?.count || 0,
             thisMonthRequests: thisMonthRequests[0]?.count || 0,
-            totalRevenue: totalRevenue[0]?.sum || 0,
+            totalRevenue: revenueQuery[0]?.totalRevenue || 0,
             completionRate: totalRequests[0]?.count > 0
                 ? Math.round((completedRequests[0]?.count / totalRequests[0]?.count) * 100)
                 : 0
         };
     });
 
-    // Group service requests by status for better organization
-    const serviceRequestsByStatus = {
-        PENDING: serviceRequestsQuery.filter(sr => sr.status === 'PENDING'),
-        ASSIGNED: serviceRequestsQuery.filter(sr => sr.status === 'ASSIGNED'),
-        IN_PROGRESS: serviceRequestsQuery.filter(sr => sr.status === 'IN_PROGRESS'),
-        COMPLETED: serviceRequestsQuery.filter(sr => sr.status === 'COMPLETED'),
-        CANCELLED: serviceRequestsQuery.filter(sr => sr.status === 'CANCELLED')
-    };
+    const data = {
+        agent: {
+            id: agent.id,
+            name: agent.name,
+            phone: agent.phone,
+            alternativePhone: agent.alternativePhone,
+            email: agent.email,
+            isActive: agent.isActive,
+            joinedDate: agent.createdAt
+        },
+        franchiseAssignments: franchiseAssignments.map(fa => ({
+            franchiseId: fa.franchiseId,
+            franchiseName: fa.franchise?.name,
+            franchiseCity: fa.franchise?.city,
+            isPrimary: fa.isPrimary,
+            assignedDate: fa.createdAt
+        })),
+        statistics: stats,
+        serviceRequests: {
+            all: serviceRequestsQuery,
+            recent: serviceRequestsQuery.slice(0, 10) // Last 10 requests
+        }
+    }
 
+
+    console.log('data dashbaord ',data)
+
+    // Return in the same format as the original function would have
     return {
         agent: {
             id: agent.id,
@@ -375,7 +401,6 @@ export const getAgentDashboard = async (agentId: string) => {
         statistics: stats,
         serviceRequests: {
             all: serviceRequestsQuery,
-            byStatus: serviceRequestsByStatus,
             recent: serviceRequestsQuery.slice(0, 10) // Last 10 requests
         }
     };

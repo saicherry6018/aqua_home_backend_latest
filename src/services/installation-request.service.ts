@@ -5,12 +5,12 @@ import {
     installationRequests,
     products,
     franchises,
-    subscriptions,
     payments,
     actionHistory,
     serviceRequests,
     franchiseAgents,
-    users
+    users,
+    razorpayPlans
 } from '../models/schema';
 import {
     InstallationRequestStatus,
@@ -24,6 +24,7 @@ import {
 import { badRequest, forbidden, notFound } from '../utils/errors';
 import Razorpay from 'razorpay';
 import * as notificationService from './notification.service';
+import { generateId } from '../utils/helpers';
 
 // Create Razorpay instance at the top of your service
 
@@ -91,7 +92,8 @@ export async function createInstallationRequest(
         installationAddress: data.installationAddress,
         status: InstallationRequestStatus.SUBMITTED,
         createdAt: now,
-        updatedAt: now
+        updatedAt: now,
+        payAmount: data.orderType ? product.rentPrice : product.buyPrice
     }).returning();
 
     // Log action history
@@ -221,7 +223,7 @@ export async function getInstallationRequestById(
             product: true,
             customer: true,
             franchise: true,
-            assignedTechnician: true
+            assignedTechnician: true,
         }
     });
 
@@ -286,6 +288,7 @@ export async function getInstallationRequestById(
         with: {
             product: true,
             franchise: true,
+            subscription:true,
             customer: true,
             assignedTechnician: true,
             actionHistory: {
@@ -413,7 +416,7 @@ export async function updateInstallationRequestStatus(
     // Update request
     const [updatedRequest] = await db.update(installationRequests)
         .set(updateData)
-    .where(eq(installationRequests.id, requestId)).returning();
+        .where(eq(installationRequests.id, requestId)).returning();
 
     const serviceRequest = await fastify.db.query.serviceRequests.findFirst({
         where: eq(serviceRequests.installationRequestId, requestId)
@@ -450,9 +453,9 @@ export async function updateInstallationRequestStatus(
     });
 
 
-if(data.status === InstallationRequestStatus.CANCELLED){
-    await sendInstallationRequestNotifications(updatedRequest, 'cancelled', user);
-}
+    if (data.status === InstallationRequestStatus.CANCELLED) {
+        await sendInstallationRequestNotifications(updatedRequest, 'cancelled', user);
+    }
 
 
     return {
@@ -657,7 +660,7 @@ export async function generatePaymentLink(
         throw forbidden('You do not have permission to generate payment links');
     }
 
-    const amount = request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
+    const amount = request.payAmount ? request.payAmount : request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice;
 
     try {
         let paymentLink: any = {};
@@ -687,7 +690,7 @@ export async function generatePaymentLink(
             if (!request.razorpaySubscriptionId || !request.razorpayPaymentLink) {
                 console.log('Creating new subscription for rental...');
 
-                const planId = `plan_rental_${request.productId}`;
+                let planId = `plan_rental_${request.productId}`;
                 console.log('Plan ID:', planId);
 
                 // Helper function to ensure plan exists
@@ -695,6 +698,14 @@ export async function generatePaymentLink(
                     console.log(`Checking if plan ${planId} exists...`);
 
                     try {
+
+                        const razorPayPlanDetailsInDB = await fastify.db.query.razorpayPlans.findFirst({
+                            where: eq(razorpayPlans.amount, amount)
+                        })
+                        if (razorPayPlanDetailsInDB) {
+                            planId = razorPayPlanDetailsInDB.razorpayPlanId
+                        }
+
                         // Try to fetch the plan first
                         const existingPlan = await razorpay.plans.fetch(planId);
                         console.log(`Plan ${planId} found:`, existingPlan.id);
@@ -718,13 +729,13 @@ export async function generatePaymentLink(
                                 period: 'monthly' as const,
                                 interval: 1,
                                 item: {
-                                    name: `Rental Plan - Product ${productId}`,
+                                    name: `Rental Plan - Amount ${amount}`,
                                     amount: Math.round(amount * 100), // Ensure it's an integer
                                     currency: 'INR',
                                     description: `Monthly rental subscription for product ${productId}`
                                 },
                                 notes: {
-                                    productId: productId.toString(),
+                                    amount: amount,
                                     type: 'rental_plan',
                                     createdAt: new Date().toISOString()
                                 }
@@ -735,6 +746,13 @@ export async function generatePaymentLink(
                             try {
                                 const createdPlan = await razorpay.plans.create(planData);
                                 console.log(`Plan created successfully:`, createdPlan.id);
+
+                                await fastify.db.delete(razorpayPlans).where(eq(razorpayPlans.amount, amount))
+                                await fastify.db.insert(razorpayPlans).values({
+                                    id: await generateId("plan"),
+                                    razorpayPlanId: createdPlan.id,
+                                    amount: amount
+                                })
                                 return createdPlan.id;
                             } catch (createError: any) {
                                 console.error('Plan creation error:', {
@@ -777,28 +795,22 @@ export async function generatePaymentLink(
                     // Ensure the plan exists and get the plan ID
                     const finalPlanId = await ensurePlanExists(planId, request.productId, amount);
                     console.log('Plan verification/creation completed successfully, using plan ID:', finalPlanId);
-
-                    // Now create the subscription
                     const subscriptionData = {
                         plan_id: finalPlanId,
                         customer_notify: 1,
                         quantity: 1,
                         total_count: 12, // 12 months
-                        start_at: Math.floor(Date.now() / 1000) + (24 * 60 * 60), // Start tomorrow
-                        addons: [{
-                            item: {
-                                name: 'Installation Deposit',
-                                amount: Math.round(amount * 100), // Ensure it's an integer
-                                currency: 'INR'
-                            }
-                        }],
+                        // start_at: Math.floor(Date.now() / 1000), // Start immediately
+                        // Removed addons section entirely - no deposit
                         notes: {
-                            type: 'rental_with_deposit',
+                            type: 'rental_subscription', // Updated type since no deposit
                             installationRequestId: requestId,
                             customerId: request.customerId.toString(),
                             productId: request.productId.toString()
                         }
                     };
+
+
 
                     console.log('Creating subscription with data:', subscriptionData);
 
@@ -877,281 +889,7 @@ export async function generatePaymentLink(
     }
 }
 
-export async function refreshPaymentStatus(
-    requestId: string,
-    user: { userId: string; role: UserRole }
-) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
 
-    const request = await db.query.installationRequests.findFirst({
-        where: eq(installationRequests.id, requestId),
-        with: { product: true, customer: true }
-    });
-
-    if (!request) {
-        throw notFound('Installation request');
-    }
-    console.log('request ', request)
-    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
-        throw badRequest('Installation must be in payment pending state');
-    }
-
-    if (!request.razorpayOrderId && !request.razorpaySubscriptionId) {
-        throw badRequest('No payment order or subscription found for this request');
-    }
-
-    try {
-        let successfulPayment = null;
-
-        // Check subscription payments for rental orders
-        if (request.razorpaySubscriptionId && request.orderType === 'RENTAL') {
-            const subscription = await fastify.razorpay.subscriptions.fetch(request.razorpaySubscriptionId);
-            if (subscription.status === 'active' || subscription.status === 'authenticated') {
-                // For subscriptions, check if first payment (deposit) is completed
-                const invoices = await fastify.razorpay.invoices.all({
-                    subscription_id: request.razorpaySubscriptionId,
-                    count: 1
-                });
-
-                console.log(' invoices ', invoices)
-
-                if (invoices.items.length > 0 && invoices.items[0].status === 'paid') {
-                    successfulPayment = {
-                        id: invoices.items[0].payment_id,
-                        amount: invoices.items[0].amount,
-                        method: 'RAZORPAY_SUBSCRIPTION'
-                    };
-                }
-            }
-        }
-
-
-        if (successfulPayment) {
-
-            console.log('successfulPayment ', successfulPayment)
-            // Payment found, complete the installation
-            await completeInstallationWithPayment(requestId, {
-                razorpayPaymentId: successfulPayment.id,
-                method: successfulPayment.method,
-                amount: successfulPayment.amount / 100
-            }, user);
-
-            return {
-                message: 'Payment verified and installation completed',
-                paymentStatus: 'COMPLETED',
-                paymentDetails: {
-                    method: successfulPayment.method,
-                    amount: successfulPayment.amount / 100,
-                    transactionId: successfulPayment.id
-                }
-            };
-        } else {
-            return {
-                message: 'Payment not yet received',
-                paymentStatus: 'PENDING',
-                paymentDetails: null
-            };
-        }
-    } catch (error) {
-        console.log('Error checking payment status:', error);
-        throw badRequest('Failed to check payment status');
-    }
-}
-
-export async function verifyPaymentAndComplete(
-    requestId: string,
-    data: {
-        paymentMethod?: 'RAZORPAY' | 'CASH' | 'UPI';
-        paymentImage?: string;
-        razorpayPaymentId?: string;
-        refresh?: boolean;
-    },
-    user: { userId: string; role: UserRole }
-) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
-
-    const request = await db.query.installationRequests.findFirst({
-        where: eq(installationRequests.id, requestId),
-        with: { product: true, customer: true, franchise: true }
-    });
-
-    if (!request) {
-        throw notFound('Installation request');
-    }
-
-    if (request.status !== InstallationRequestStatus.PAYMENT_PENDING) {
-        throw badRequest('Installation must be in payment pending state');
-    }
-
-    let paymentVerified = false;
-    let paymentDetails: any = null;
-
-    // If refresh is requested and razorpayOrderId exists, check payment status
-    if (data.refresh && request.razorpayOrderId) {
-        try {
-            const payments = await fastify.razorpay.orders.fetchPayments(request.razorpayOrderId);
-            const successfulPayment = payments.items.find((payment: any) => payment.status === 'captured');
-
-            if (successfulPayment) {
-                paymentVerified = true;
-                paymentDetails = {
-                    razorpayPaymentId: successfulPayment.id,
-                    method: 'RAZORPAY',
-                    amount: successfulPayment.amount / 100
-                };
-            }
-        } catch (error) {
-            console.error('Error checking payment status:', error);
-        }
-    }
-
-    // If Razorpay payment ID provided, verify it
-    if (data.razorpayPaymentId && !paymentVerified) {
-        try {
-            const payment = await fastify.razorpay.payments.fetch(data.razorpayPaymentId);
-            if (payment.status === 'captured' && payment.order_id === request.razorpayOrderId) {
-                paymentVerified = true;
-                paymentDetails = {
-                    razorpayPaymentId: payment.id,
-                    method: 'RAZORPAY',
-                    amount: payment.amount / 100
-                };
-            }
-        } catch (error) {
-            console.error('Error verifying payment:', error);
-        }
-    }
-
-    // For manual payment methods (CASH/UPI), require payment image
-    if (['CASH', 'UPI'].includes(data.paymentMethod || '') && data.paymentImage) {
-        paymentVerified = true;
-        paymentDetails = {
-            method: data.paymentMethod,
-            paymentImage: data.paymentImage,
-            amount: request.orderType === 'RENTAL' ? request.product.deposit : request.product.buyPrice
-        };
-    }
-
-    if (!paymentVerified) {
-        throw badRequest('Payment not verified. Please provide valid payment proof or refresh payment status.');
-    }
-
-    const now = new Date().toISOString();
-    let connectId: string | null = null;
-    let subscription = null;
-
-    // For RENTAL orders, create subscription
-    if (request.orderType === 'RENTAL') {
-        connectId = generateConnectId();
-        const subscriptionId = uuidv4();
-
-        // Create subscription
-        await db.insert(subscriptions).values({
-            id: subscriptionId,
-            connectId,
-            requestId: requestId,
-            customerId: request.customerId,
-            productId: request.productId,
-            franchiseId: request.franchiseId,
-            planName: `${request.product.name} Rental Plan`,
-            status: 'ACTIVE',
-            startDate: now,
-            currentPeriodStartDate: now,
-            currentPeriodEndDate: getNextMonthDate(now),
-            nextPaymentDate: getNextMonthDate(now),
-            monthlyAmount: request.product.rentPrice,
-            depositAmount: request.product.deposit,
-            createdAt: now,
-            updatedAt: now
-        });
-
-        subscription = { id: subscriptionId, connectId };
-    }
-
-    // Record payment
-    await recordDepositPayment(
-        subscription?.id || null,
-        paymentDetails.amount,
-        {
-            depositPaymentMethod: paymentDetails.method,
-            depositReceiptImage: paymentDetails.paymentImage
-        },
-        request.orderType === 'PURCHASE' ? requestId : undefined
-    );
-
-    // Update installation request to completed
-    await db.update(installationRequests)
-        .set({
-            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
-            connectId,
-            completedDate: now,
-            updatedAt: now
-        })
-        .where(eq(installationRequests.id, requestId));
-
-    // Also update related service request if exists
-    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
-        where: and(
-            eq(serviceRequests.installationRequestId, requestId),
-            eq(serviceRequests.type, 'INSTALLATION')
-        )
-    });
-
-    if (relatedServiceRequest) {
-        await db.update(serviceRequests).set({
-            status: 'COMPLETED',
-            completedDate: now,
-            updatedAt: now
-        }).where(eq(serviceRequests.id, relatedServiceRequest.id));
-
-        // Log action history for service request
-        await logActionHistory({
-            serviceRequestId: relatedServiceRequest.id,
-            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
-            fromStatus: 'PAYMENT_PENDING',
-            toStatus: 'COMPLETED',
-            performedBy: user.userId,
-            performedByRole: user.role,
-            comment: `Payment verified, installation completed`,
-            metadata: JSON.stringify({ installationRequestId: requestId, connectId })
-        });
-    }
-
-    // Log action history
-    await logActionHistory({
-        installationRequestId: requestId,
-        actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
-        fromStatus: InstallationRequestStatus.PAYMENT_PENDING,
-        toStatus: InstallationRequestStatus.INSTALLATION_COMPLETED,
-        performedBy: user.userId,
-        performedByRole: user.role,
-        comment: 'Payment verified and installation completed',
-        metadata: JSON.stringify({
-            connectId,
-            paymentMethod: paymentDetails.method,
-            razorpayPaymentId: paymentDetails.razorpayPaymentId
-        })
-    });
-
-    // Send push notification to franchise owner, customer, technician, and admin
-    const updatedRequest = await getInstallationRequestById(requestId, user);
-    if (updatedRequest) {
-        await sendInstallationRequestNotifications(updatedRequest, 'completed', user);
-    }
-
-    return {
-        message: 'Payment verified and installation completed successfully',
-        installationRequest: {
-            id: requestId,
-            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
-            connectId,
-            completedDate: now
-        },
-        subscription
-    };
-}
 
 // Helper Functions
 async function logActionHistory(data: {
@@ -1189,170 +927,6 @@ function getActionTypeFromStatus(status: InstallationRequestStatus): ActionType 
     return mapping[status] || ActionType.INSTALLATION_REQUEST_SUBMITTED;
 }
 
-function generateConnectId(): string {
-    // Generate a unique 8-character connect ID
-    return Math.random().toString(36).substr(2, 8).toUpperCase();
-}
-
-function getNextMonthDate(dateString: string): string {
-    const date = new Date(dateString);
-    date.setMonth(date.getMonth() + 1);
-    return date.toISOString();
-}
-
-function getValidStatusTransitions(currentStatus: InstallationRequestStatus): InstallationRequestStatus[] {
-    const transitions: Record<InstallationRequestStatus, InstallationRequestStatus[]> = {
-        [InstallationRequestStatus.SUBMITTED]: [
-            InstallationRequestStatus.REJECTED,
-            InstallationRequestStatus.FRANCHISE_CONTACTED
-        ],
-        [InstallationRequestStatus.FRANCHISE_CONTACTED]: [
-            InstallationRequestStatus.INSTALLATION_SCHEDULED,
-            InstallationRequestStatus.CANCELLED
-        ],
-        [InstallationRequestStatus.INSTALLATION_SCHEDULED]: [
-            InstallationRequestStatus.INSTALLATION_IN_PROGRESS,
-            InstallationRequestStatus.CANCELLED
-        ],
-        [InstallationRequestStatus.INSTALLATION_IN_PROGRESS]: [
-            InstallationRequestStatus.PAYMENT_PENDING,
-            InstallationRequestStatus.CANCELLED
-        ],
-        [InstallationRequestStatus.PAYMENT_PENDING]: [
-            InstallationRequestStatus.INSTALLATION_COMPLETED
-        ],
-        [InstallationRequestStatus.CANCELLED]: [
-            InstallationRequestStatus.FRANCHISE_CONTACTED,
-            InstallationRequestStatus.INSTALLATION_SCHEDULED,
-            InstallationRequestStatus.INSTALLATION_IN_PROGRESS
-        ],
-        [InstallationRequestStatus.REJECTED]: [],
-        [InstallationRequestStatus.INSTALLATION_COMPLETED]: []
-    };
-
-    return transitions[currentStatus] || [];
-}
-
-async function completeInstallationWithPayment(
-    requestId: string,
-    paymentDetails: {
-        razorpayPaymentId?: string;
-        method: string;
-        amount: number;
-        paymentImage?: string;
-    },
-    user: { userId: string; role: UserRole }
-) {
-    const fastify = getFastifyInstance();
-    const db = fastify.db;
-
-    const request = await db.query.installationRequests.findFirst({
-        where: eq(installationRequests.id, requestId),
-        with: { product: true, customer: true }
-    });
-
-    if (!request) {
-        throw notFound('Installation request');
-    }
-
-    const now = new Date().toISOString();
-    let connectId: string | null = null;
-    let subscription = null;
-
-    // For RENTAL orders, create subscription
-    if (request.orderType === 'RENTAL') {
-        connectId = generateConnectId();
-        const subscriptionId = uuidv4();
-
-        await db.insert(subscriptions).values({
-            id: subscriptionId,
-            connectId,
-            requestId: requestId,
-            customerId: request.customerId,
-            productId: request.productId,
-            franchiseId: request.franchiseId,
-            planName: `${request.product.name} Rental Plan`,
-            status: 'ACTIVE',
-            startDate: now,
-            currentPeriodStartDate: now,
-            currentPeriodEndDate: getNextMonthDate(now),
-            nextPaymentDate: getNextMonthDate(now),
-            monthlyAmount: request.product.rentPrice,
-            depositAmount: request.product.deposit,
-            createdAt: now,
-            updatedAt: now
-        });
-
-        subscription = { id: subscriptionId, connectId };
-    }
-
-    // Record payment
-    await recordDepositPayment(
-        subscription?.id || null,
-        paymentDetails.amount,
-        {
-            depositPaymentMethod: paymentDetails.method,
-            depositReceiptImage: paymentDetails.paymentImage
-        },
-        requestId
-
-    );
-
-    // Update installation request to completed
-    await db.update(installationRequests)
-        .set({
-            status: InstallationRequestStatus.INSTALLATION_COMPLETED,
-            connectId,
-            completedDate: now,
-            updatedAt: now
-        })
-        .where(eq(installationRequests.id, requestId));
-
-    // Update related service request
-    const relatedServiceRequest = await db.query.serviceRequests.findFirst({
-        where: and(
-            eq(serviceRequests.installationRequestId, requestId),
-            eq(serviceRequests.type, 'INSTALLATION')
-        )
-    });
-
-    if (relatedServiceRequest) {
-        await db.update(serviceRequests).set({
-            status: 'COMPLETED',
-            completedDate: now,
-            updatedAt: now
-        }).where(eq(serviceRequests.id, relatedServiceRequest.id));
-
-        await logActionHistory({
-            serviceRequestId: relatedServiceRequest.id,
-            actionType: ActionType.SERVICE_REQUEST_COMPLETED,
-            fromStatus: 'PAYMENT_PENDING',
-            toStatus: 'COMPLETED',
-            performedBy: user.userId,
-            performedByRole: user.role,
-            comment: `Payment verified, installation completed`,
-            metadata: JSON.stringify({ installationRequestId: requestId, connectId })
-        });
-    }
-
-    // Log action history
-    await logActionHistory({
-        installationRequestId: requestId,
-        actionType: ActionType.INSTALLATION_REQUEST_COMPLETED,
-        fromStatus: InstallationRequestStatus.PAYMENT_PENDING,
-        toStatus: InstallationRequestStatus.INSTALLATION_COMPLETED,
-        performedBy: user.userId,
-        performedByRole: user.role,
-        comment: 'Payment verified and installation completed',
-        metadata: JSON.stringify({
-            connectId,
-            paymentMethod: paymentDetails.method,
-            razorpayPaymentId: paymentDetails.razorpayPaymentId
-        })
-    });
-
-    return { connectId, subscription };
-}
 
 async function recordDepositPayment(
     subscriptionId: string | null,
@@ -1395,7 +969,7 @@ async function sendInstallationRequestNotifications(
     let targetUserIds: string[] = [];
     let targetUserRoles: UserRole[] = [];
 
-    console.log('called sendnotifivstions in instalaltion requests ',action)
+    console.log('called sendnotifivstions in instalaltion requests ', action)
 
     switch (action) {
         case 'created':
@@ -1451,17 +1025,17 @@ async function sendInstallationRequestNotifications(
     // Fetch users based on roles and explicitly added IDs
     let usersToNotify: any[] = [];
 
-    console.log('targetUserRoles ',targetUserRoles)
+    console.log('targetUserRoles ', targetUserRoles)
 
     if (targetUserRoles.length > 0) {
         const roleBasedUsers = await db.query.users.findMany({
             where: or(...targetUserRoles.map(role => eq(users.role, role))),
             columns: { id: true, pushNotificationToken: true }
         });
-        console.log('roleBasedUsers ',roleBasedUsers)
+        console.log('roleBasedUsers ', roleBasedUsers)
         usersToNotify.push(...roleBasedUsers);
     }
-    console.log('usersToNotify ',usersToNotify)
+    console.log('usersToNotify ', usersToNotify)
     if (targetUserIds.length > 0) {
         const specificUsers = await db.query.users.findMany({
             where: or(...targetUserIds.map(id => eq(users.id, id))),
@@ -1477,7 +1051,7 @@ async function sendInstallationRequestNotifications(
     }
 
     // Filter out users who triggered the action and those without tokens
-    const finalUsersToNotify = usersToNotify.filter(user =>  user.pushNotificationToken);
+    const finalUsersToNotify = usersToNotify.filter(user => user.pushNotificationToken);
 
 
     if (finalUsersToNotify.length > 0) {
