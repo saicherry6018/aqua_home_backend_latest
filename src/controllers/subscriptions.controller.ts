@@ -226,3 +226,70 @@ export async function terminateSubscription(
     handleError(error, request, reply);
   }
 }
+
+// Generate payment link for subscription
+export async function generateSubscriptionPaymentLink(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const { id } = request.params;
+    const user = request.user;
+
+    console.log('Generating payment link for subscription:', id);
+
+    const result = await subscriptionService.generatePaymentLink(id, user);
+    return reply.code(200).send(result);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+// Refresh payment status for subscription
+export async function refreshSubscriptionPaymentStatus(
+  request: FastifyRequest<{ Params: { id: string } }>,
+  reply: FastifyReply
+) {
+  try {
+    const { id } = request.params;
+    const user = request.user;
+
+    console.log('Refreshing payment status for subscription:', id);
+
+    const result = await subscriptionService.refreshPaymentStatus(id, user);
+    return reply.code(200).send(result);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
+
+// Mark payment as completed manually (for cash/UPI payments)
+export async function markSubscriptionPaymentCompleted(
+  request: FastifyRequest<{
+    Params: { id: string };
+    Body: {
+      paymentMethod: 'CASH' | 'UPI';
+      paymentImage?: string;
+      notes?: string;
+    }
+  }>,
+  reply: FastifyReply
+) {
+  try {
+    const { id } = request.params;
+    const { paymentMethod, paymentImage, notes } = request.body;
+    const user = request.user;
+
+    console.log('Marking subscription payment as completed:', id);
+
+    const result = await subscriptionService.markPaymentCompleted(id, {
+      paymentMethod,
+      paymentImage,
+      notes
+    }, user);
+
+    return reply.code(200).send(result);
+  } catch (error) {
+    handleError(error, request, reply);
+  }
+}
