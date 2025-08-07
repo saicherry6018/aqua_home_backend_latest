@@ -314,3 +314,75 @@ export const terminateSubscriptionSchema = {
   description: "Terminate an active or paused subscription (admin or franchise owner only)",
   security: [{ bearerAuth: [] }],
 };
+
+// Generate Payment Link Schema
+export const generatePaymentLinkSchema = {
+  params: zodToJsonSchema(z.object({
+    id: z.string(),
+  })),
+  response: {
+    200: zodToJsonSchema(z.object({
+      paymentId: z.string(),
+      razorpayOrderId: z.string(),
+      amount: z.number(),
+      currency: z.string(),
+      key: z.string(),
+      message: z.string(),
+    })),
+    400: zodToJsonSchema(ErrorResponseSchema),
+    403: zodToJsonSchema(ErrorResponseSchema),
+    404: zodToJsonSchema(ErrorResponseSchema),
+  },
+  tags: ["subscriptions"],
+  summary: "Generate payment link for subscription",
+  description: "Generate a Razorpay payment link for subscription payment",
+  security: [{ bearerAuth: [] }],
+};
+
+// Refresh Payment Status Schema
+export const refreshPaymentStatusSchema = {
+  params: zodToJsonSchema(z.object({
+    id: z.string(),
+  })),
+  response: {
+    200: zodToJsonSchema(z.object({
+      paymentStatus: z.string(),
+      message: z.string(),
+      payment: z.object({}).optional(),
+      nextPaymentDate: z.string().optional(),
+    })),
+    400: zodToJsonSchema(ErrorResponseSchema),
+    403: zodToJsonSchema(ErrorResponseSchema),
+    404: zodToJsonSchema(ErrorResponseSchema),
+  },
+  tags: ["subscriptions"],
+  summary: "Refresh payment status for subscription",
+  description: "Check and refresh payment status from Razorpay",
+  security: [{ bearerAuth: [] }],
+};
+
+// Mark Payment Completed Schema
+export const markPaymentCompletedSchema = {
+  params: zodToJsonSchema(z.object({
+    id: z.string(),
+  })),
+  body: zodToJsonSchema(z.object({
+    paymentMethod: z.enum(['CASH', 'UPI']),
+    paymentImage: z.string().optional(),
+    notes: z.string().optional(),
+  })),
+  response: {
+    200: zodToJsonSchema(z.object({
+      message: z.string(),
+      payment: z.object({}),
+      nextPaymentDate: z.string(),
+    })),
+    400: zodToJsonSchema(ErrorResponseSchema),
+    403: zodToJsonSchema(ErrorResponseSchema),
+    404: zodToJsonSchema(ErrorResponseSchema),
+  },
+  tags: ["subscriptions"],
+  summary: "Mark subscription payment as completed",
+  description: "Manually mark subscription payment as completed (for cash/UPI payments)",
+  security: [{ bearerAuth: [] }],
+};
